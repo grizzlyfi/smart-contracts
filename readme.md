@@ -1,3 +1,7 @@
+# Bug Bounty
+https://immunefi.com/bounty/grizzlyfi/
+
+
 # Contracts
 
 This folder contains all contracts for grizzly.fi. In the root are the actual deployed contracts and the folders contain abstract contracts, interfaces and mock contracts.
