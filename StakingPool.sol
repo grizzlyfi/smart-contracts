@@ -42,6 +42,8 @@ contract StakingPool is AccessControl, IStakingPool {
     uint256 private blockRewardPhase2Amount = 0;
 
     uint256 public totalStaked = 0;
+    uint256 public totalBnbClaimed = 0;
+    uint256 public totalHoneyClaimed = 0;
 
     mapping(address => StakerAmounts) public override stakerAmounts;
 
@@ -335,6 +337,9 @@ contract StakingPool is AccessControl, IStakingPool {
             StakedToken.claimTokens(rewardsToTransfer);
             IERC20(address(StakedToken)).safeTransfer(to, rewardsToTransfer);
         }
+
+        totalHoneyClaimed += removedStakedToken + rewardsToTransfer;
+        totalBnbClaimed += removedBnb;
 
         emit ClaimRewards(
             msg.sender,

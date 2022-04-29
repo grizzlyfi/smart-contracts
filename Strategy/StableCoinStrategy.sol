@@ -10,6 +10,7 @@ abstract contract StableCoinStrategy is BaseConfig {
     struct StablecoinStrategyParticipant {
         uint256 amount;
         uint256 rewardMask;
+        uint256 totalReinvested;
     }
 
     uint256 public stablecoinStrategyDeposits = 0;
@@ -26,6 +27,9 @@ abstract contract StableCoinStrategy is BaseConfig {
 
         participantData[msg.sender].rewardMask = roundMask;
         participantData[msg.sender].amount = currentBalance + amount;
+        participantData[msg.sender].totalReinvested +=
+            currentBalance -
+            currentAmount;
 
         stablecoinStrategyDeposits += currentBalance - currentAmount + amount;
     }
@@ -45,6 +49,9 @@ abstract contract StableCoinStrategy is BaseConfig {
         uint256 currentAmount = participantData[msg.sender].amount;
         participantData[msg.sender].rewardMask = roundMask;
         participantData[msg.sender].amount = currentBalance - amount;
+        participantData[msg.sender].totalReinvested +=
+            currentBalance -
+            currentAmount;
 
         stablecoinStrategyDeposits =
             stablecoinStrategyDeposits +
@@ -75,5 +82,16 @@ abstract contract StableCoinStrategy is BaseConfig {
         roundMask +=
             (DECIMAL_OFFSET * rewardedAmount) /
             stablecoinStrategyDeposits;
+    }
+
+    /// @notice Reads out the participant data
+    /// @param participant The address of the participant
+    /// @return Participant data
+    function getStablecoinStrategyParticipantData(address participant)
+        public
+        view
+        returns (StablecoinStrategyParticipant memory)
+    {
+        return participantData[participant];
     }
 }

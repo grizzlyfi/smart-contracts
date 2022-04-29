@@ -180,12 +180,11 @@ abstract contract GrizzlyStrategy is BaseConfig {
     /// @notice Gets the current staked honey for a grizzly strategy investor
     /// @dev Gets the current honey balance from the GHNY staking pool to calculate the current honey round mask. This is then used to calculate the total pending honey for the investor
     /// @return The current honey balance for a grizzly investor
-    function getGrizzlyStrategyStakedHoney() external view returns (uint256) {
-        require(
-            grizzlyStrategyDeposits > 0,
-            "Deposits needs to be larger than zero"
-        );
-        if (participantData[msg.sender].honeyMask == 0) return 0;
+    function getGrizzlyStrategyStakedHoney() public view returns (uint256) {
+        if (
+            participantData[msg.sender].honeyMask == 0 ||
+            grizzlyStrategyDeposits == 0
+        ) return 0;
 
         (, , , , uint256 claimedHoney, , ) = StakingPool.stakerAmounts(
             address(this)
@@ -209,11 +208,10 @@ abstract contract GrizzlyStrategy is BaseConfig {
     /// @dev Gets the current lp balance from the GHNY staking pool to calculate the current lp round mask. This is then used to calculate the total pending lp for the investor
     /// @return The current lp balance for a grizzly investor
     function getGrizzlyStrategyLpRewards() external view returns (uint256) {
-        require(
-            grizzlyStrategyDeposits > 0,
-            "Deposits needs to be larger than zero"
-        );
-        if (participantData[msg.sender].lpMask == 0) return 0;
+        if (
+            participantData[msg.sender].lpMask == 0 ||
+            grizzlyStrategyDeposits == 0
+        ) return 0;
 
         (, , , , , uint256 claimedLp, ) = StakingPool.stakerAmounts(
             address(this)
@@ -231,5 +229,16 @@ abstract contract GrizzlyStrategy is BaseConfig {
             ((currentLpRoundMask - participantData[msg.sender].lpMask) *
                 participantData[msg.sender].amount) /
             DECIMAL_OFFSET;
+    }
+
+    /// @notice Reads out the participant data
+    /// @param participant The address of the participant
+    /// @return Participant data
+    function getGrizzlyStrategyParticipantData(address participant)
+        external
+        view
+        returns (GrizzlyStrategyParticipant memory)
+    {
+        return participantData[participant];
     }
 }

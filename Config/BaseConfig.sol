@@ -10,6 +10,8 @@ import "../Interfaces/IUniswapV2Pair.sol";
 import "../Interfaces/IStakingPool.sol";
 import "../Interfaces/IHoney.sol";
 import "../Interfaces/IReferral.sol";
+import "../Interfaces/IAveragePriceOracle.sol";
+import "../Interfaces/IDEX.sol";
 
 /// @title Base config for grizzly contract
 /// @notice This contract contains all external addresses and dependencies for the grizzly contract. It also approves dependent contracts to spend tokens on behalf of grizzly.sol
@@ -25,7 +27,6 @@ abstract contract BaseConfig is AccessControl {
     uint256 public constant MAX_PERCENTAGE = 100000;
     uint256 public constant DECIMAL_OFFSET = 10e12;
 
-    IUniswapV2Router01 public SwapRouter;
     IUniswapV2Pair public LPToken;
     IMasterChef public StakingContract;
     IStakingPool public StakingPool;
@@ -35,28 +36,32 @@ abstract contract BaseConfig is AccessControl {
     IERC20 public TokenA;
     IERC20 public TokenB;
     IReferral public Referral;
+    IAveragePriceOracle public AveragePriceOracle;
+    IDEX public DEX;
     uint256 public PoolID;
     address public DevTeam;
 
     constructor(
         address _Admin,
-        address _SwapRouterAddress,
         address _StakingContractAddress,
         address _StakingPoolAddress,
         address _HoneyTokenAddress,
         address _HoneyBnbLpTokenAddress,
         address _DevTeamAddress,
         address _ReferralAddress,
+        address _AveragePriceOracleAddress,
+        address _DEXAddress,
         uint256 _PoolID
     ) {
         _grantRole(DEFAULT_ADMIN_ROLE, _Admin);
 
-        SwapRouter = IUniswapV2Router01(_SwapRouterAddress);
         StakingContract = IMasterChef(_StakingContractAddress);
         StakingPool = IStakingPool(_StakingPoolAddress);
         HoneyToken = IHoney(_HoneyTokenAddress);
         HoneyBnbLpToken = IERC20(_HoneyBnbLpTokenAddress);
         Referral = IReferral(_ReferralAddress);
+        AveragePriceOracle = IAveragePriceOracle(_AveragePriceOracleAddress);
+        DEX = IDEX(_DEXAddress);
 
         DevTeam = _DevTeamAddress;
         PoolID = _PoolID;
@@ -71,25 +76,20 @@ abstract contract BaseConfig is AccessControl {
 
         RewardToken = IERC20(StakingContract.cake());
 
-        TokenA.safeApprove(address(SwapRouter), type(uint256).max);
-        TokenB.safeApprove(address(SwapRouter), type(uint256).max);
-        RewardToken.safeApprove(address(SwapRouter), type(uint256).max);
-
-        IERC20(address(LPToken)).safeApprove(
-            address(SwapRouter),
-            type(uint256).max
-        );
         IERC20(address(LPToken)).safeApprove(
             address(StakingContract),
             type(uint256).max
         );
 
-        IERC20(address(HoneyToken)).safeApprove(
-            address(StakingPool),
+        IERC20(address(RewardToken)).safeApprove(
+            address(DEX),
             type(uint256).max
         );
+
+        IERC20(address(LPToken)).safeApprove(address(DEX), type(uint256).max);
+
         IERC20(address(HoneyToken)).safeApprove(
-            address(SwapRouter),
+            address(StakingPool),
             type(uint256).max
         );
         IERC20(address(HoneyToken)).safeApprove(

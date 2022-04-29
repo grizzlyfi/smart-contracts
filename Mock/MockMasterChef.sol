@@ -2,6 +2,7 @@
 pragma solidity ^0.8.4;
 
 import "hardhat/console.sol";
+import "../Interfaces/IERC20.sol";
 
 contract MockMasterChef {
     address private cakeTokenAddress;
@@ -49,11 +50,19 @@ contract MockMasterChef {
     }
 
     function setCurrentPendingCake(uint256 _currentPendingCake) external {
+        IERC20(cakeTokenAddress).transferFrom(
+            msg.sender,
+            address(this),
+            _currentPendingCake
+        );
         currentPendingCake = _currentPendingCake;
     }
 
     function deposit(uint256 _pid, uint256 _amount) external {
         deposits[_pid] = deposits[_pid] + _amount;
+        if (_amount == 0) {
+            IERC20(cakeTokenAddress).transfer(msg.sender, currentPendingCake);
+        }
     }
 
     function withdraw(uint256 _pid, uint256 _amount) external {}

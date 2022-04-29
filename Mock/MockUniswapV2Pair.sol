@@ -8,6 +8,10 @@ contract MockUniswapV2Pair is MockERC20 {
     address private token1Address;
     uint112 private reserve0Amount;
     uint112 private reserve1Amount;
+    uint256 private priceCumulative0Last;
+    uint256 private priceCumulative1Last;
+    uint224 constant Q112 = 2**112;
+    uint32 private lastTimestamp;
 
     constructor(
         address _token0Address,
@@ -84,20 +88,42 @@ contract MockUniswapV2Pair is MockERC20 {
             uint32 blockTimestampLast
         )
     {
-        return (reserve0Amount, reserve1Amount, 1);
+        return (reserve0Amount, reserve1Amount, lastTimestamp);
     }
 
-    function setReserves(uint112 _reserve0, uint112 _reserve1) external {
+    function setLastTimestamp(uint32 _timestamp) external {
+        lastTimestamp = _timestamp;
+    }
+
+    function setReserves(
+        uint112 _reserve0,
+        uint112 _reserve1,
+        uint32 _timestamp
+    ) external {
+        require(_timestamp >= lastTimestamp);
+
+        uint32 _timeElapsed = _timestamp - lastTimestamp;
+
+        if (reserve0Amount > 0 && reserve1Amount > 0) {
+            priceCumulative0Last +=
+                ((Q112 * reserve1Amount) / reserve0Amount) *
+                _timeElapsed;
+            priceCumulative1Last +=
+                ((Q112 * reserve0Amount) / reserve1Amount) *
+                _timeElapsed;
+        }
+
         reserve0Amount = _reserve0;
         reserve1Amount = _reserve1;
+        lastTimestamp = _timestamp;
     }
 
     function price0CumulativeLast() external view returns (uint256) {
-        return 1;
+        return priceCumulative0Last;
     }
 
     function price1CumulativeLast() external view returns (uint256) {
-        return 1;
+        return priceCumulative1Last;
     }
 
     function kLast() external view returns (uint256) {

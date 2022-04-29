@@ -8,28 +8,32 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @title The referral contract
 /// @notice This contract keeps track of the referral balances and their honey rewards. It uses the TokenA-TokenB-LP token from the referral recipient to split up the honey rewards for the referral giver using EIP-1973.
-/// @dev This contract is intended to be called from a Rewarder contract like the Grizzly contract which wants to keep track of the referrals.
+/// @dev This contract is intended to be called from a Rewarder contract like the Grizzly contract which wants to keep track of the referrals. It is important to note that the Grizzly contract needs to keep track of the deposit of the referral recipient as this contract only considers the sum of all the deposits from referral recipients for a given referral giver.
 contract Referral is AccessControl, IReferral {
     using SafeERC20 for IERC20;
 
-    struct ReferralRecipient {
-        uint256 referralDeposit;
-        uint256 referralReward;
-        address referralGiver;
+    struct ReferralGiver {
+        uint256 deposit;
+        uint256 reward;
         uint256 rewardMask;
+        uint256 claimedRewards;
     }
 
     // the role that allows updating parameters
     bytes32 public constant REWARDER_ROLE = keccak256("REWARDER_ROLE");
     uint256 public constant DECIMAL_OFFSET = 10e12;
 
-    // (poolAddress) -> (referralRecipientAddress) -> (ReferralRecipient)
-    mapping(address => mapping(address => ReferralRecipient))
-        private referralRecipients;
+    // (poolAddress) -> (referralGiverAddress) -> (ReferralGiver)
+    // This mapping is used to keep track the rewards and the deposits for a referral giver
+    mapping(address => mapping(address => ReferralGiver)) public referralGivers;
 
-    // (poolAddress) -> (referralGiverAddress) -> (List of referralRecipients)
-    // This mapping is used such that the referralGiver can show all his referralRecipients in order to claim his rewards from them
-    mapping(address => mapping(address => address[])) public referralGivers;
+    // (referralRecipientAddress) -> (ReferralGiver))
+    // This mapping is used to get the referral giver for a given referral recipient
+    mapping(address => address) public referralGiverAddresses;
+
+    // (ReferralGiver) -> (active friends)
+    // this mapping shows the active friends for a referral giver
+    mapping(address => uint256) public activeFriends;
 
     // (poolAddress) -> (totalReferralDeposit)
     mapping(address => uint256) private totalReferralDeposits;
@@ -63,7 +67,7 @@ contract Referral is AccessControl, IReferral {
     }
 
     /// @notice Deposits LP tokens for a referral recipient such that the reward share for a referralGiver can be calculated
-    /// @dev Dev team used if no referralGiver is provided. An array and a mapping is created such that from both sides (referralGiver and referralRecipient) the data can be requested. Can only be called by a rewarder contract.
+    /// @dev Dev team used if no referralGiver is provided. Referral recipient and referral giver needs to be different. The referral giver is set once for a referral recipient, after that it will always be the same. Can only be called by a rewarder contract.
     /// @param _amount The deposit amount
     /// @param _referralRecipient The user depositing LP tokens
     /// @param _referralGiver The referralGiver, who will receive the rewards
@@ -76,32 +80,31 @@ contract Referral is AccessControl, IReferral {
         if (roundMasks[msg.sender] == 0) {
             roundMasks[msg.sender] = 1;
         }
-        if (
-            referralRecipients[msg.sender][_referralRecipient].referralGiver ==
-            address(0)
-        ) {
+        if (_referralGiver == address(0)) {
+            _referralGiver = DevTeam;
+        }
+        if (referralGiverAddresses[_referralRecipient] == address(0)) {
             require(
                 _referralRecipient != _referralGiver,
                 "referral to the same account"
             );
-            if (_referralGiver == address(0)) {
-                _referralGiver = DevTeam;
-            }
-            referralRecipients[msg.sender][_referralRecipient]
-                .referralGiver = _referralGiver;
-            referralGivers[msg.sender][_referralGiver].push(_referralRecipient);
+            referralGiverAddresses[_referralRecipient] = _referralGiver;
+            activeFriends[_referralGiver] += 1;
         }
 
-        updatePendingRewards(msg.sender, _referralRecipient);
+        address _constReferralGiver = referralGiverAddresses[
+            _referralRecipient
+        ];
 
-        referralRecipients[msg.sender][_referralRecipient]
-            .referralDeposit += _amount;
+        updatePendingRewards(msg.sender, _constReferralGiver);
+
+        referralGivers[msg.sender][_constReferralGiver].deposit += _amount;
 
         totalReferralDeposits[msg.sender] += _amount;
     }
 
     /// @notice Withdraws LP tokens for a referral recipient such that the rewards for the referralGiver get updated
-    /// @dev upadtes the users reward mask before the withdraw. Can only be called by a rewarder contract.
+    /// @dev upadtes the users reward mask before the withdraw. It is important to note that the caller contract needs to keep track of the referral recipient deposits, such that no recipient can withdraw more than he provided for a given referral giver. Can only be called by a rewarder contract.
     /// @param _amount The withdraw amount
     /// @param _referralRecipient the recipient who withdraws LP tokens
     function referralWithdraw(uint256 _amount, address _referralRecipient)
@@ -109,39 +112,35 @@ contract Referral is AccessControl, IReferral {
         override
         onlyRole(REWARDER_ROLE)
     {
-        if (
-            _amount >
-            referralRecipients[msg.sender][_referralRecipient].referralDeposit
-        ) {
-            _amount = referralRecipients[msg.sender][_referralRecipient]
-                .referralDeposit;
+        address _referralGiver = referralGiverAddresses[_referralRecipient];
+
+        if (referralGivers[msg.sender][_referralGiver].deposit < _amount) {
+            _amount = referralGivers[msg.sender][_referralGiver].deposit;
         }
 
-        updatePendingRewards(msg.sender, _referralRecipient);
+        updatePendingRewards(msg.sender, _referralGiver);
 
-        referralRecipients[msg.sender][_referralRecipient]
-            .referralDeposit -= _amount;
+        referralGivers[msg.sender][_referralGiver].deposit -= _amount;
 
         totalReferralDeposits[msg.sender] -= _amount;
     }
 
-    /// @notice The current referral rewards for a referralGiver dependent on his referralRecipient and the pool
+    /// @notice The current referral rewards for a referralGiver dependent on the pool
     /// @dev Calculated using the referral rewards plus the difference from the current round mask
     /// @param _poolAddress The address of the pool for which the rewards should be calculated
-    /// @param _referralRecipient The referral recipient that used the referral giver
+    /// @param _referralGiver The referral giver address
     /// @return the current reward for the referral giver
-    function getReferralRewards(
-        address _poolAddress,
-        address _referralRecipient
-    ) public view override returns (uint256) {
+    function getReferralRewards(address _poolAddress, address _referralGiver)
+        public
+        view
+        override
+        returns (uint256)
+    {
         return
-            referralRecipients[_poolAddress][_referralRecipient]
-                .referralReward +
+            referralGivers[_poolAddress][_referralGiver].reward +
             ((roundMasks[_poolAddress] -
-                referralRecipients[_poolAddress][_referralRecipient]
-                    .rewardMask) *
-                referralRecipients[_poolAddress][_referralRecipient]
-                    .referralDeposit) /
+                referralGivers[_poolAddress][_referralGiver].rewardMask) *
+                referralGivers[_poolAddress][_referralGiver].deposit) /
             DECIMAL_OFFSET;
     }
 
@@ -149,50 +148,41 @@ contract Referral is AccessControl, IReferral {
     /// @dev upadtes the users reward mask before the withdraw
     /// @param _amount The amount to be withdrawn
     /// @param _poolAddress The address of the pool for which the rewards should be withdrawn
-    /// @param _referralRecipient The referral recipient that used the referral giver
-    function withdrawReferralRewards(
-        uint256 _amount,
-        address _poolAddress,
-        address _referralRecipient
-    ) public override {
-        require(
-            referralRecipients[_poolAddress][_referralRecipient]
-                .referralGiver == msg.sender,
-            "Wrong referral"
-        );
+    function withdrawReferralRewards(uint256 _amount, address _poolAddress)
+        public
+        override
+    {
         uint256 _currentReferralReward = getReferralRewards(
             _poolAddress,
-            _referralRecipient
+            msg.sender
         );
 
         require(_amount <= _currentReferralReward, "Withdraw amount too large");
 
-        referralRecipients[_poolAddress][_referralRecipient].referralReward =
+        referralGivers[_poolAddress][msg.sender].reward =
             _currentReferralReward -
             _amount;
-        referralRecipients[_poolAddress][_referralRecipient]
-            .rewardMask = roundMasks[_poolAddress];
+        referralGivers[_poolAddress][msg.sender].rewardMask = roundMasks[
+            _poolAddress
+        ];
+        referralGivers[_poolAddress][msg.sender].claimedRewards += _amount;
 
         IERC20(address(HoneyToken)).safeTransfer(msg.sender, _amount);
     }
 
     /// @notice Withdraws all the referral rewards for a referral giver
     /// @param _poolAddress The address of the pool for which the rewards should be withdrawn
-    /// @param _referralRecipient The referral recipient that used the referral giver
     /// @return Returns the value that was withdrawn
-    function withdrawAllReferralRewards(
-        address _poolAddress,
-        address _referralRecipient
-    ) external override returns (uint256) {
+    function withdrawAllReferralRewards(address _poolAddress)
+        external
+        override
+        returns (uint256)
+    {
         uint256 _amountToWithdraw = getReferralRewards(
             _poolAddress,
-            _referralRecipient
+            msg.sender
         );
-        withdrawReferralRewards(
-            _amountToWithdraw,
-            _poolAddress,
-            _referralRecipient
-        );
+        withdrawReferralRewards(_amountToWithdraw, _poolAddress);
         return _amountToWithdraw;
     }
 
@@ -217,21 +207,41 @@ contract Referral is AccessControl, IReferral {
             totalReferralDeposits[msg.sender];
     }
 
+    /// @notice Gets the total earned amount for a referral giver
+    /// @dev Calculates the current pending reward plus the withdrawn rewards
+    /// @param _poolAddress The address of the pool for which the rewards should be calculated
+    /// @param _referralGiver The referral giver address
+    /// @return The total earned amount
+    function getTotalEarnedAmount(address _poolAddress, address _referralGiver)
+        external
+        view
+        returns (uint256)
+    {
+        uint256 currentReferralRewards = getReferralRewards(
+            _poolAddress,
+            _referralGiver
+        );
+        uint256 claimedReferralRewards = referralGivers[_poolAddress][
+            _referralGiver
+        ].claimedRewards;
+        return currentReferralRewards + claimedReferralRewards;
+    }
+
     /// @notice Updates the current pending rewards
     /// @dev Adds pending rewards to the referral reward for a referralRecipient and resets the roundmask again
     /// @param _poolAddress The address of the pool for which the pending rewards should be updated
-    /// @param _referralRecipient The address of the referral recipient for which the pending rewards should be updated
-    function updatePendingRewards(
-        address _poolAddress,
-        address _referralRecipient
-    ) internal {
+    /// @param _referralGiver The address of the referral giver for which the pending rewards should be updated
+    function updatePendingRewards(address _poolAddress, address _referralGiver)
+        internal
+    {
         uint256 _currentReferralReward = getReferralRewards(
             _poolAddress,
-            _referralRecipient
+            _referralGiver
         );
-        referralRecipients[_poolAddress][_referralRecipient]
-            .referralReward = _currentReferralReward;
-        referralRecipients[_poolAddress][_referralRecipient]
-            .rewardMask = roundMasks[_poolAddress];
+        referralGivers[_poolAddress][_referralGiver]
+            .reward = _currentReferralReward;
+        referralGivers[_poolAddress][_referralGiver].rewardMask = roundMasks[
+            _poolAddress
+        ];
     }
 }

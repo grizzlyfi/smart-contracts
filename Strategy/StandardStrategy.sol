@@ -16,6 +16,7 @@ abstract contract StandardStrategy is BaseConfig {
         uint256 lpMask;
         uint256 rewardMask;
         uint256 pendingRewards;
+        uint256 totalReinvested;
     }
 
     uint256 public lpRoundMask = 1;
@@ -37,15 +38,19 @@ abstract contract StandardStrategy is BaseConfig {
     function standardStrategyDeposit(uint256 amount) internal {
         updateStandardRewardMask();
         uint256 currentDeposit = getStandardStrategyBalance();
+        uint256 currentAmount = participantData[msg.sender].amount;
 
         standardStrategyDeposits =
             standardStrategyDeposits +
             currentDeposit -
-            participantData[msg.sender].amount +
+            currentAmount +
             amount;
 
         participantData[msg.sender].amount = currentDeposit + amount;
         participantData[msg.sender].lpMask = lpRoundMask;
+        participantData[msg.sender].totalReinvested +=
+            currentDeposit -
+            currentAmount;
     }
 
     /// @notice Withdraws the desired amount for a standard strategy investor
@@ -56,6 +61,7 @@ abstract contract StandardStrategy is BaseConfig {
 
         updateStandardRewardMask();
         uint256 currentDeposit = getStandardStrategyBalance();
+        uint256 currentAmount = participantData[msg.sender].amount;
         require(
             amount <= currentDeposit,
             "Specified amount greater than current deposit"
@@ -64,10 +70,14 @@ abstract contract StandardStrategy is BaseConfig {
         standardStrategyDeposits =
             standardStrategyDeposits +
             currentDeposit -
-            participantData[msg.sender].amount -
+            currentAmount -
             amount;
+
         participantData[msg.sender].amount = currentDeposit - amount;
         participantData[msg.sender].lpMask = lpRoundMask;
+        participantData[msg.sender].totalReinvested +=
+            currentDeposit -
+            currentAmount;
     }
 
     /// @notice Adds global lp rewards to the contract
@@ -133,5 +143,16 @@ abstract contract StandardStrategy is BaseConfig {
         uint256 currentRewardBalance = getStandardStrategyHoneyRewards();
         participantData[msg.sender].pendingRewards = currentRewardBalance;
         participantData[msg.sender].rewardMask = honeyRoundMask;
+    }
+
+    /// @notice Reads out the participant data
+    /// @param participant The address of the participant
+    /// @return Participant data
+    function getStandardStrategyParticipantData(address participant)
+        public
+        view
+        returns (StandardStrategyParticipant memory)
+    {
+        return participantData[participant];
     }
 }

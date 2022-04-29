@@ -1,19 +1,20 @@
 //SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.4;
 
-import "./DEX/DEX.sol";
+import "./DEX.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./Strategy/GrizzlyStrategy.sol";
 import "./Strategy/StableCoinStrategy.sol";
 import "./Strategy/StandardStrategy.sol";
 import "./Config/BaseConfig.sol";
 import "./Interfaces/IGrizzly.sol";
+import "./Oracle/AveragePriceOracle.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @title The Grizzly contract
 /// @notice This contract put together all abstract contracts and is deployed once for each token pair (hive). It allows the user to deposit and withdraw funds to the predefined hive. In addition, rewards can be staked using stakeReward.
-/// @dev AccessControl from openzeppelin implementation is used to handle the update of the beeEfficiencyThreshold.
+/// @dev AccessControl from openzeppelin implementation is used to handle the update of the beeEfficiency level.
 /// User with DEFAULT_ADMIN_ROLE can grant UPDATER_ROLE to any address.
 /// The DEFAULT_ADMIN_ROLE is intended to be a 2 out of 3 multisig wallet in the beginning and then be moved to governance in the future.
 /// The Contract uses ReentrancyGuard from openzeppelin for all transactions that transfer bnbs to the msg.sender
@@ -23,44 +24,54 @@ contract Grizzly is
     GrizzlyStrategy,
     StableCoinStrategy,
     StandardStrategy,
-    DEX,
     IGrizzly
 {
+    receive() external payable {}
+
     using SafeERC20 for IERC20;
 
     constructor(
         address _Admin,
-        address _SwapRouterAddress,
         address _StakingContractAddress,
         address _StakingPoolAddress,
         address _HoneyTokenAddress,
         address _HoneyBnbLpTokenAddress,
         address _DevTeamAddress,
         address _ReferralAddress,
+        address _AveragePriceOracleAddress,
+        address _DEXAddress,
         uint256 _PoolID
     )
         BaseConfig(
             _Admin,
-            _SwapRouterAddress,
             _StakingContractAddress,
             _StakingPoolAddress,
             _HoneyTokenAddress,
             _HoneyBnbLpTokenAddress,
             _DevTeamAddress,
             _ReferralAddress,
+            _AveragePriceOracleAddress,
+            _DEXAddress,
             _PoolID
         )
     {
-        beeEfficiencyThreshold = 500 ether;
+        beeEfficiencyLevel = 500 ether;
         isEmergency = false;
     }
 
-    uint256 public beeEfficiencyThreshold;
+    uint256 public beeEfficiencyLevel;
     bool public isEmergency;
 
     mapping(address => Strategy) public userStrategy;
-    uint256 private totalUnusedTokenA;
-    uint256 private totalUnusedTokenB;
+    uint256 public totalUnusedTokenA;
+    uint256 public totalUnusedTokenB;
+    uint256 public totalRewardsClaimed;
+    uint256 public totalStandardBnbReinvested;
+    uint256 public totalStablecoinBnbReinvested;
+    uint256 public lastStakeRewardsCall;
+    uint256 public lastStakeRewardsDuration;
+    uint256 public lastStakeRewardsDeposit;
+    uint256 public lastStakeRewardsCake;
 
     modifier emergency(bool _state) {
         require(isEmergency == _state, "Not allowed in this emergency state");
@@ -117,7 +128,7 @@ contract Grizzly is
         returns (uint256)
     {
         require(deadline > block.timestamp, "Deadline expired");
-        checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         return _deposit(msg.value, referralGiver);
     }
 
@@ -145,10 +156,13 @@ contract Grizzly is
         uint256 deadline
     ) external override nonReentrant emergency(false) returns (uint256) {
         require(deadline > block.timestamp, "Deadline expired");
-        checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
-        IERC20 tokenContract = IERC20(token);
-        tokenContract.safeTransferFrom(msg.sender, address(this), amount);
-        uint256 amountConverted = convertTokenToEth(amount, token);
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
+        IERC20 TokenInstance = IERC20(token);
+        TokenInstance.safeTransferFrom(msg.sender, address(this), amount);
+        if (TokenInstance.allowance(address(this), address(DEX)) < amount) {
+            TokenInstance.approve(address(DEX), amount);
+        }
+        uint256 amountConverted = DEX.convertTokenToEth(amount, token);
         return _deposit(amountConverted, referralGiver);
     }
 
@@ -172,7 +186,7 @@ contract Grizzly is
         uint256 deadline
     ) external override nonReentrant emergency(false) returns (uint256) {
         require(deadline > block.timestamp, "Deadline expired");
-        checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         _stakeRewards();
         uint256 amountWithdrawn = _withdraw(amount);
         (bool transferSuccess, ) = payable(msg.sender).call{
@@ -200,7 +214,7 @@ contract Grizzly is
         uint256 deadline
     ) external override nonReentrant emergency(false) returns (uint256) {
         require(deadline > block.timestamp, "Deadline expired");
-        checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         _stakeRewards();
         uint256 currentDeposits = 0;
 
@@ -245,13 +259,12 @@ contract Grizzly is
         uint256 deadline
     ) external override nonReentrant emergency(false) returns (uint256) {
         require(deadline > block.timestamp, "Deadline expired");
-        checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         _stakeRewards();
         uint256 amountWithdrawn = _withdraw(amount);
-        uint256 tokenAmountWithdrawn = convertEthToToken(
-            amountWithdrawn,
-            token
-        );
+        uint256 tokenAmountWithdrawn = DEX.convertEthToToken{
+            value: amountWithdrawn
+        }(token);
         IERC20(token).safeTransfer(msg.sender, tokenAmountWithdrawn);
         return tokenAmountWithdrawn;
     }
@@ -268,11 +281,8 @@ contract Grizzly is
         require(amount > 0, "Deposit needs to be larger than 0");
         _stakeRewards();
 
-        (
-            uint256 lpValue,
-            uint256 unusedTokenA,
-            uint256 unusedTokenB
-        ) = convertEthToPairLP(amount, address(TokenA), address(TokenB));
+        (uint256 lpValue, uint256 unusedTokenA, uint256 unusedTokenB) = DEX
+            .convertEthToPairLP{value: amount}(address(LPToken));
 
         totalUnusedTokenA += unusedTokenA;
         totalUnusedTokenB += unusedTokenB;
@@ -310,11 +320,7 @@ contract Grizzly is
 
         StakingContract.withdraw(PoolID, amount);
 
-        uint256 bnbAmount = convertPairLpToEth(
-            address(TokenA),
-            address(TokenB),
-            amount
-        );
+        uint256 bnbAmount = DEX.convertPairLpToEth(address(LPToken), amount);
 
         Referral.referralWithdraw(amount, msg.sender);
         emit WithdrawEvent(msg.sender, amount, userStrategy[msg.sender]);
@@ -344,7 +350,7 @@ contract Grizzly is
             userStrategy[msg.sender] != toStrategy,
             "User already in selected strategy"
         );
-        checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
 
         _stakeRewards();
         uint256 currentDeposits = 0;
@@ -410,7 +416,7 @@ contract Grizzly is
         returns (uint256 rewardedTokenA, uint256 rewardedTokenB)
     {
         require(deadline > block.timestamp, "Deadline expired");
-        checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         _stakeRewards();
         TokenA.safeTransfer(msg.sender, totalUnusedTokenA);
         TokenB.safeTransfer(msg.sender, totalUnusedTokenB);
@@ -452,7 +458,7 @@ contract Grizzly is
         )
     {
         require(deadline > block.timestamp, "Deadline expired");
-        checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         return _stakeRewards();
     }
 
@@ -472,14 +478,29 @@ contract Grizzly is
             uint256 stablecoinBnb
         )
     {
+        // update average honey bnb price
+        AveragePriceOracle.updateHoneyEthPrice();
         // Get rewards from MasterChef
+
+        uint256 beforeAmount = RewardToken.balanceOf(address(this));
         StakingContract.deposit(PoolID, 0);
-        uint256 currentRewards = RewardToken.balanceOf(address(this));
+        uint256 afterAmount = RewardToken.balanceOf(address(this));
+        uint256 currentRewards = afterAmount - beforeAmount;
 
         if (currentRewards == 0) return (0, 0, 0, 0);
 
+        // Store rewards for APY calculation
+        lastStakeRewardsDuration = block.timestamp - lastStakeRewardsCall;
+        lastStakeRewardsCall = block.timestamp;
+        (lastStakeRewardsDeposit, ) = StakingContract.userInfo(
+            PoolID,
+            address(this)
+        );
+        lastStakeRewardsCake = currentRewards;
+        totalRewardsClaimed += currentRewards;
+
         // Convert all rewards to BNB
-        uint256 bnbAmount = convertTokenToEth(
+        uint256 bnbAmount = DEX.convertTokenToEth(
             currentRewards,
             address(RewardToken)
         );
@@ -506,7 +527,8 @@ contract Grizzly is
 
         if (bnbAmount > 100 && totalDeposits != 0) {
             // Get the price of Honey relative to BNB
-            uint256 beeEfficiencyLevel = getTokenEthPrice(address(HoneyToken));
+            uint256 ghnyBnbPrice = AveragePriceOracle
+                .getAverageHoneyForOneEth();
             // get 1 % of the referralDeposit totalDeposit share
             uint256 referralReward = (bnbAmount *
                 Referral.totalReferralDepositForPool(address(this))) /
@@ -514,10 +536,7 @@ contract Grizzly is
                 100;
 
             // Honey (based on Honey-BNB price) is minted
-            uint256 mintedHoney = mintTokens(
-                referralReward,
-                beeEfficiencyLevel
-            );
+            uint256 mintedHoney = mintTokens(referralReward, ghnyBnbPrice);
             // referral contract is rewarded with the minted honey
             Referral.referralUpdateRewards(mintedHoney);
         }
@@ -541,12 +560,9 @@ contract Grizzly is
             uint256 tokenPairLpAmount,
             uint256 unusedTokenA,
             uint256 unusedTokenB
-        ) = convertEthToPairLP(
-                tokenPairLpShare,
-                address(TokenA),
-                address(TokenB)
-            );
+        ) = DEX.convertEthToPairLP{value: tokenPairLpShare}(address(LPToken));
 
+        totalStandardBnbReinvested += tokenPairLpShare;
         totalUnusedTokenA += unusedTokenA;
         totalUnusedTokenB += unusedTokenB;
 
@@ -557,16 +573,15 @@ contract Grizzly is
         StakingContract.deposit(PoolID, tokenPairLpAmount);
 
         // Get the price of Honey relative to BNB
-        uint256 beeEfficiencyLevel = getTokenEthPrice(address(HoneyToken));
+        uint256 ghnyBnbPrice = AveragePriceOracle.getAverageHoneyForOneEth();
 
         // If Honey price too low, use buyback strategy
-        if (beeEfficiencyLevel > beeEfficiencyThreshold) {
+        if (ghnyBnbPrice > beeEfficiencyLevel) {
             // 24% of the BNB is used to buy Honey from the DEX
             uint256 honeyBuybackShare = (bnbReward * 24) / 100;
-            uint256 honeyBuybackAmount = convertEthToToken(
-                honeyBuybackShare,
-                address(HoneyToken)
-            );
+            uint256 honeyBuybackAmount = DEX.convertEthToToken{
+                value: honeyBuybackShare
+            }(address(HoneyToken));
 
             // 6% of the equivalent amount of Honey (based on Honey-BNB price) is minted
             uint256 mintedHoney = mintTokens(
@@ -585,10 +600,9 @@ contract Grizzly is
         } else {
             // If Honey price is high, 24% is converted into Honey-BNB LP
             uint256 honeyBnbLpShare = (bnbReward * 24) / 100;
-            (uint256 honeyBnbLpAmount, , ) = convertEthToTokenLP(
-                honeyBnbLpShare,
-                address(HoneyToken)
-            );
+            (uint256 honeyBnbLpAmount, , ) = DEX.convertEthToTokenLP{
+                value: honeyBnbLpShare
+            }(address(HoneyToken));
 
             // That Honey-BNB LP is sent as reward to the Staking Pool
             StakingPool.rewardLP(honeyBnbLpAmount);
@@ -614,16 +628,15 @@ contract Grizzly is
     /// @param bnbReward The pending bnb reward to be restaked
     function stakeGrizzlyRewards(uint256 bnbReward) internal {
         // Get the price of Honey relative to BNB
-        uint256 beeEfficiencyLevel = getTokenEthPrice(address(HoneyToken));
+        uint256 ghnyBnbPrice = AveragePriceOracle.getAverageHoneyForOneEth();
 
         // If Honey price too low, use buyback strategy
-        if (beeEfficiencyLevel > beeEfficiencyThreshold) {
+        if (ghnyBnbPrice > beeEfficiencyLevel) {
             // 94% (70% + 24%) of the BNB is used to buy Honey from the DEX
             uint256 honeyBuybackShare = (bnbReward * (70 + 24)) / 100;
-            uint256 honeyBuybackAmount = convertEthToToken(
-                honeyBuybackShare,
-                address(HoneyToken)
-            );
+            uint256 honeyBuybackAmount = DEX.convertEthToToken{
+                value: honeyBuybackShare
+            }(address(HoneyToken));
 
             // 6% of the equivalent amount of Honey (based on Honey-BNB price) is minted
             uint256 mintedHoney = mintTokens(
@@ -642,17 +655,15 @@ contract Grizzly is
         } else {
             // If Honey price is high, 70% of the BNB is used to buy Honey from the DEX
             uint256 honeyBuybackShare = (bnbReward * 70) / 100;
-            uint256 honeyBuybackAmount = convertEthToToken(
-                honeyBuybackShare,
-                address(HoneyToken)
-            );
+            uint256 honeyBuybackAmount = DEX.convertEthToToken{
+                value: honeyBuybackShare
+            }(address(HoneyToken));
 
             // 24% of the BNB is converted into Honey-BNB LP
             uint256 honeyBnbLpShare = (bnbReward * 24) / 100;
-            (uint256 honeyBnbLpAmount, , ) = convertEthToTokenLP(
-                honeyBnbLpShare,
-                address(HoneyToken)
-            );
+            (uint256 honeyBnbLpAmount, , ) = DEX.convertEthToTokenLP{
+                value: honeyBnbLpShare
+            }(address(HoneyToken));
             // The Honey-BNB LP is provided as reward to the Staking Pool
             StakingPool.rewardLP(honeyBnbLpAmount);
 
@@ -678,12 +689,10 @@ contract Grizzly is
     function stakeStablecoinRewards(uint256 bnbReward) internal {
         // 97% of the BNB is converted into TokenA-TokenB LP tokens
         uint256 pairLpShare = (bnbReward * 97) / 100;
-        (
-            uint256 pairLpAmount,
-            uint256 unusedTokenA,
-            uint256 unusedTokenB
-        ) = convertEthToPairLP(pairLpShare, address(TokenA), address(TokenB));
+        (uint256 pairLpAmount, uint256 unusedTokenA, uint256 unusedTokenB) = DEX
+            .convertEthToPairLP{value: pairLpShare}(address(LPToken));
 
+        totalStablecoinBnbReinvested += pairLpShare;
         totalUnusedTokenA += unusedTokenA;
         totalUnusedTokenB += unusedTokenB;
 
@@ -701,28 +710,28 @@ contract Grizzly is
     }
 
     /// @notice Mints tokens according to the bee efficiency level
-    /// @param share The share that should be minted in honey
-    /// @param beeEfficiencyLevel The bee efficiency level to be uset to convert bnb shares into honey amounts
+    /// @param _share The share that should be minted in honey
+    /// @param _beeEfficiencyLevel The bee efficiency level to be uset to convert bnb shares into honey amounts
     /// @return tokens The amount minted in honey tokens
-    function mintTokens(uint256 share, uint256 beeEfficiencyLevel)
+    function mintTokens(uint256 _share, uint256 _beeEfficiencyLevel)
         internal
         returns (uint256 tokens)
     {
-        tokens = (share * beeEfficiencyLevel) / (1 ether);
+        tokens = (_share * _beeEfficiencyLevel) / (1 ether);
 
         HoneyToken.claimTokens(tokens);
     }
 
-    /// @notice Updates the bee efficiency threshold
+    /// @notice Updates the bee efficiency level
     /// @dev only updater role can perform this function
-    /// @param _beeEfficiencyThreshold The threshold for the bee efficiency level
-    function updateBeeEfficiencyLevel(uint256 _beeEfficiencyThreshold)
+    /// @param _newBeeEfficiencyLevel The new bee efficiency level
+    function updateBeeEfficiencyLevel(uint256 _newBeeEfficiencyLevel)
         external
         override
         emergency(false)
         onlyRole(UPDATER_ROLE)
     {
-        beeEfficiencyThreshold = _beeEfficiencyThreshold;
+        beeEfficiencyLevel = _newBeeEfficiencyLevel;
     }
 
     /// @notice Used to recover funds sent to this contract by mistake
@@ -771,5 +780,70 @@ contract Grizzly is
             require(transferSuccess, "Transfer failed");
         }
         return amountWithdrawn;
+    }
+
+    /// @notice Used to get the most up-to-date state for caller's deposits. It is intended to be statically called
+    /// @dev Calls stakeRewards before reading strategy-specific data in order to get the most up to-date-state
+    /// @return currentStrategy - The current strategy in which the caller is in
+    /// @return deposited - The amount of LP tokens deposited in the current strategy
+    /// @return balance - The sum of deposited LP tokens and reinvested amounts
+    /// @return totalReinvested - The total amount reinvested, including unclaimed rewards
+    /// @return earnedHoney - The amount of Honey tokens earned
+    /// @return earnedBnb - The amount of BNB earned
+    /// @return stakedHoney - The amount of Honey tokens staked in the Staking Pool
+    function getUpdatedState()
+        external
+        emergency(false)
+        returns (
+            Strategy currentStrategy,
+            uint256 deposited,
+            uint256 balance,
+            uint256 totalReinvested,
+            uint256 earnedHoney,
+            uint256 earnedBnb,
+            uint256 stakedHoney
+        )
+    {
+        _stakeRewards();
+        currentStrategy = userStrategy[msg.sender];
+        if (currentStrategy == Strategy.GRIZZLY) {
+            deposited = getGrizzlyStrategyBalance();
+            balance = deposited;
+            totalReinvested = 0;
+            (earnedHoney, earnedBnb) = grizzlyStrategyClaimLP();
+            stakedHoney = getGrizzlyStrategyStakedHoney();
+        } else if (currentStrategy == Strategy.STANDARD) {
+            StandardStrategyParticipant
+                memory participantData = getStandardStrategyParticipantData(
+                    msg.sender
+                );
+
+            deposited = participantData.amount;
+            balance = getStandardStrategyBalance();
+            totalReinvested =
+                participantData.totalReinvested +
+                balance -
+                deposited;
+
+            earnedHoney = getStandardStrategyHoneyRewards();
+            earnedBnb = 0;
+            stakedHoney = 0;
+        } else if (currentStrategy == Strategy.STABLECOIN) {
+            StablecoinStrategyParticipant
+                memory participantData = getStablecoinStrategyParticipantData(
+                    msg.sender
+                );
+
+            deposited = participantData.amount;
+            balance = getStablecoinStrategyBalance();
+            totalReinvested =
+                participantData.totalReinvested +
+                balance -
+                deposited;
+
+            earnedHoney = 0;
+            earnedBnb = 0;
+            stakedHoney = 0;
+        }
     }
 }

@@ -16,21 +16,17 @@ interface IReferral {
     function referralWithdraw(uint256 _amount, address _referralRecipient)
         external;
 
-    function getReferralRewards(
-        address _poolAddress,
-        address _referralRecipient
-    ) external view returns (uint256);
+    function getReferralRewards(address _poolAddress, address _referralGiver)
+        external
+        view
+        returns (uint256);
 
-    function withdrawReferralRewards(
-        uint256 _amount,
-        address _poolAddress,
-        address _referralRecipient
-    ) external;
+    function withdrawReferralRewards(uint256 _amount, address _poolAddress)
+        external;
 
-    function withdrawAllReferralRewards(
-        address _poolAddress,
-        address _referralRecipient
-    ) external returns (uint256);
+    function withdrawAllReferralRewards(address _poolAddress)
+        external
+        returns (uint256);
 
     function referralUpdateRewards(uint256 _rewardedAmount) external;
 }

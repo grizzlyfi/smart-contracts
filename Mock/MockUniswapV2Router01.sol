@@ -11,11 +11,12 @@ contract MockUniswapV2Router01 {
     mapping(address => uint256) public tokenEthPrices;
     uint256 public tokenOffset = 0;
     uint256 public ethOffset = 0;
+    address public factory;
 
     constructor() {}
 
-    function factory() external pure returns (address) {
-        return 0x0000000000000000000000000000000000000000;
+    function setFactory(address _factory) external {
+        factory = _factory;
     }
 
     function WETH() public pure returns (address) {
@@ -39,13 +40,13 @@ contract MockUniswapV2Router01 {
             uint256 liquidity
         )
     {
-        require(amountADesired <= userTokenAmounts[to][tokenA]);
-        require(amountBDesired <= userTokenAmounts[to][tokenB]);
-        userTokenAmounts[to][tokenA] =
-            userTokenAmounts[to][tokenA] -
+        require(amountADesired <= userTokenAmounts[msg.sender][tokenA]);
+        require(amountBDesired <= userTokenAmounts[msg.sender][tokenB]);
+        userTokenAmounts[msg.sender][tokenA] =
+            userTokenAmounts[msg.sender][tokenA] -
             amountADesired;
-        userTokenAmounts[to][tokenB] =
-            userTokenAmounts[to][tokenB] -
+        userTokenAmounts[msg.sender][tokenB] =
+            userTokenAmounts[msg.sender][tokenB] -
             amountBDesired;
         userLPAmounts[to][tokenA][tokenB] =
             userLPAmounts[to][tokenA][tokenB] +
@@ -74,9 +75,9 @@ contract MockUniswapV2Router01 {
             uint256 liquidity
         )
     {
-        require(amountTokenDesired <= userTokenAmounts[to][token]);
-        userTokenAmounts[to][token] =
-            userTokenAmounts[to][token] -
+        require(amountTokenDesired <= userTokenAmounts[msg.sender][token]);
+        userTokenAmounts[msg.sender][token] =
+            userTokenAmounts[msg.sender][token] -
             amountTokenDesired;
 
         userLPAmounts[to][token][WETH()] =
@@ -84,10 +85,13 @@ contract MockUniswapV2Router01 {
             amountTokenDesired +
             msg.value;
 
-        if(ethOffset > 0)
-            payable(msg.sender).transfer(ethOffset);
+        if (ethOffset > 0) payable(msg.sender).transfer(ethOffset);
 
-        return (amountTokenDesired - tokenOffset, msg.value - ethOffset, amountTokenDesired + msg.value);
+        return (
+            amountTokenDesired - tokenOffset,
+            msg.value - ethOffset,
+            amountTokenDesired + msg.value
+        );
     }
 
     function removeLiquidity(
@@ -99,9 +103,9 @@ contract MockUniswapV2Router01 {
         address to,
         uint256 deadline
     ) external returns (uint256 amountA, uint256 amountB) {
-        require(liquidity <= userLPAmounts[to][tokenA][tokenB]);
-        userLPAmounts[to][tokenA][tokenB] =
-            userLPAmounts[to][tokenA][tokenB] -
+        require(liquidity <= userLPAmounts[msg.sender][tokenA][tokenB]);
+        userLPAmounts[msg.sender][tokenA][tokenB] =
+            userLPAmounts[msg.sender][tokenA][tokenB] -
             liquidity;
 
         userTokenAmounts[to][tokenA] =
@@ -235,10 +239,10 @@ contract MockUniswapV2Router01 {
         address to,
         uint256 deadline
     ) external returns (uint256[] memory amounts) {
-        require(amountIn <= userTokenAmounts[to][path[0]]);
+        require(amountIn <= userTokenAmounts[msg.sender][path[0]]);
 
-        userTokenAmounts[to][path[0]] =
-            userTokenAmounts[to][path[0]] -
+        userTokenAmounts[msg.sender][path[0]] =
+            userTokenAmounts[msg.sender][path[0]] -
             amountIn;
 
         payable(to).transfer(amountIn);
@@ -314,15 +318,40 @@ contract MockUniswapV2Router01 {
         tokenEthPrices[token] = price;
     }
 
+    function transferToken(
+        address from,
+        address to,
+        address token,
+        uint256 amount
+    ) external {
+        userTokenAmounts[from][token] -= amount;
+        userTokenAmounts[to][token] += amount;
+    }
+
+    function transferLP(
+        address from,
+        address to,
+        address tokenA,
+        address tokenB,
+        uint256 amount
+    ) external {
+        userLPAmounts[from][tokenA][tokenB] -= amount;
+        userLPAmounts[to][tokenA][tokenB] += amount;
+    }
+
     function setTokenAmount(address token, address to) external payable {
         userTokenAmounts[to][token] = userTokenAmounts[to][token] + msg.value;
     }
 
     function setTokenEthLpAmount(address token, address to) external payable {
-        userLPAmounts[to][token][WETH()] = userLPAmounts[to][token][WETH()] + msg.value;
+        userLPAmounts[to][token][WETH()] =
+            userLPAmounts[to][token][WETH()] +
+            msg.value;
     }
 
-    function setAddLiquidityOffset(uint256 _tokenOffset, uint256 _ethOffset) external {
+    function setAddLiquidityOffset(uint256 _tokenOffset, uint256 _ethOffset)
+        external
+    {
         tokenOffset = _tokenOffset;
         ethOffset = _ethOffset;
     }
