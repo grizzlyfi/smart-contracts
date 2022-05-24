@@ -1,16 +1,23 @@
 //SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.4;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
 import "./Interfaces/IReferral.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 /// @title The referral contract
 /// @notice This contract keeps track of the referral balances and their honey rewards. It uses the TokenA-TokenB-LP token from the referral recipient to split up the honey rewards for the referral giver using EIP-1973.
 /// @dev This contract is intended to be called from a Rewarder contract like the Grizzly contract which wants to keep track of the referrals. It is important to note that the Grizzly contract needs to keep track of the deposit of the referral recipient as this contract only considers the sum of all the deposits from referral recipients for a given referral giver.
-contract Referral is AccessControl, IReferral {
-    using SafeERC20 for IERC20;
+contract Referral is
+    Initializable,
+    AccessControlUpgradeable,
+    IReferral,
+    PausableUpgradeable
+{
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
     struct ReferralGiver {
         uint256 deposit;
@@ -18,6 +25,8 @@ contract Referral is AccessControl, IReferral {
         uint256 rewardMask;
         uint256 claimedRewards;
     }
+
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     // the role that allows updating parameters
     bytes32 public constant REWARDER_ROLE = keccak256("REWARDER_ROLE");
@@ -41,17 +50,30 @@ contract Referral is AccessControl, IReferral {
     // (poolAddress) -> (roundMask)
     mapping(address => uint256) private roundMasks;
 
-    IERC20 private HoneyToken;
+    IERC20Upgradeable private HoneyToken;
     address private DevTeam;
 
-    constructor(
+    function initialize(
         address _honeyTokenAddress,
         address _admin,
         address _devTeam
-    ) {
-        HoneyToken = IERC20(_honeyTokenAddress);
+    ) public initializer {
+        HoneyToken = IERC20Upgradeable(_honeyTokenAddress);
         DevTeam = _devTeam;
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        __Pausable_init();
+    }
+
+    /// @notice pause
+    /// @dev pause the contract
+    function pause() external whenNotPaused onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    /// @notice unpause
+    /// @dev unpause the contract
+    function unpause() external whenPaused onlyRole(PAUSER_ROLE) {
+        _unpause();
     }
 
     /// @notice Getter for the total referral deposit for a pool
@@ -151,6 +173,7 @@ contract Referral is AccessControl, IReferral {
     function withdrawReferralRewards(uint256 _amount, address _poolAddress)
         public
         override
+        whenNotPaused
     {
         uint256 _currentReferralReward = getReferralRewards(
             _poolAddress,
@@ -167,7 +190,10 @@ contract Referral is AccessControl, IReferral {
         ];
         referralGivers[_poolAddress][msg.sender].claimedRewards += _amount;
 
-        IERC20(address(HoneyToken)).safeTransfer(msg.sender, _amount);
+        IERC20Upgradeable(address(HoneyToken)).safeTransfer(
+            msg.sender,
+            _amount
+        );
     }
 
     /// @notice Withdraws all the referral rewards for a referral giver
@@ -176,6 +202,7 @@ contract Referral is AccessControl, IReferral {
     function withdrawAllReferralRewards(address _poolAddress)
         external
         override
+        whenNotPaused
         returns (uint256)
     {
         uint256 _amountToWithdraw = getReferralRewards(
@@ -196,7 +223,7 @@ contract Referral is AccessControl, IReferral {
     {
         if (totalReferralDeposits[msg.sender] == 0) return;
 
-        IERC20(address(HoneyToken)).safeTransferFrom(
+        IERC20Upgradeable(address(HoneyToken)).safeTransferFrom(
             msg.sender,
             address(this),
             _rewardedAmount
@@ -244,4 +271,6 @@ contract Referral is AccessControl, IReferral {
             _poolAddress
         ];
     }
+
+    uint256[50] private __gap;
 }

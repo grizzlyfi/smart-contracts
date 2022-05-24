@@ -3,10 +3,12 @@ pragma solidity ^0.8.4;
 
 import "./Interfaces/IDEX.sol";
 import "./Interfaces/IHoney.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 /// @title Honey-BNB-LP Staking pool
 /// @notice The Honey-BNB-LP staking pool allows investors to deposit Honey-BNB-LP tokens. The investor recieves each block a certain reward in honey tokens. This blockReward can be updated by an account with UPDATER_ROLE.
@@ -14,10 +16,15 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 /// User with DEFAULT_ADMIN_ROLE can grant UPDATER_ROLE to any address.
 /// The DEFAULT_ADMIN_ROLE is intended to be a 2 out of 3 multisig wallet in the beginning and then be moved to governance in the future.
 /// The Honey-BNB-LP staking pool uses EIP-1973 to for scalable rewards
-contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
+contract HoneyBNBFarm is
+    Initializable,
+    AccessControlUpgradeable,
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable
+{
     receive() external payable {}
 
-    using SafeERC20 for IERC20;
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
     struct ParticipantData {
         uint256 stakedAmount;
@@ -26,17 +33,18 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
     }
 
     bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant FUNDS_RECOVERY_ROLE =
         keccak256("FUNDS_RECOVERY_ROLE");
     uint256 private constant DECIMAL_OFFSET = 10e12;
 
     IDEX public DEX;
     IHoney public HoneyToken;
-    IERC20 public LPToken;
+    IERC20Upgradeable public LPToken;
 
-    uint256 public totalDeposits = 0;
-    uint256 private roundMask = 1;
-    uint256 private lastRoundMaskUpdateBlock = 0;
+    uint256 public totalDeposits;
+    uint256 private roundMask;
+    uint256 private lastRoundMaskUpdateBlock;
     uint256 public blockReward;
 
     mapping(address => ParticipantData) public participantData;
@@ -45,24 +53,38 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
     event Unstake(address indexed _staker, uint256 amount);
     event ClaimRewards(address indexed _staker, uint256 amount);
 
-    constructor(
+    function initialize(
         address _honeyTokenAddress,
         address _lpTokenAddress,
         address _dexAddress,
         uint256 _blockReward,
         address _admin
-    ) {
+    ) public initializer {
+        roundMask = 1;
         HoneyToken = IHoney(_honeyTokenAddress);
-        LPToken = IERC20(_lpTokenAddress);
+        LPToken = IERC20Upgradeable(_lpTokenAddress);
         DEX = IDEX(_dexAddress);
         blockReward = _blockReward;
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        __Pausable_init();
+    }
+
+    /// @notice pause
+    /// @dev pause the contract
+    function pause() external whenNotPaused onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    /// @notice unpause
+    /// @dev unpause the contract
+    function unpause() external whenPaused onlyRole(PAUSER_ROLE) {
+        _unpause();
     }
 
     /// @notice Stakes the desired amount of Honey-BNB-LP tokens into the pool
     /// @dev Executes claimRewards before the staking to get a clean state for the roundMask and the rewards
     /// @param amount The desired staking amount for an investor in Honey-BNB-LP tokens
-    function stakeLp(uint256 amount) external {
+    function stakeLp(uint256 amount) external whenNotPaused {
         require(amount > 0, "Amount must be greater than zero");
 
         // The first person to stake will initiate reward distribution
@@ -73,7 +95,7 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
         participantData[msg.sender].stakedAmount += amount;
         totalDeposits += amount;
 
-        IERC20(address(LPToken)).safeTransferFrom(
+        IERC20Upgradeable(address(LPToken)).safeTransferFrom(
             msg.sender,
             address(this),
             amount
@@ -85,7 +107,7 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
     /// @notice Unstakes the desired amount of Honey-BNB-LP tokens from the pool
     /// @dev Executes claimRewards before the unstaking to get a clean state for the roundMask and the rewards
     /// @param amount The desired amount to unstake for an investor in Honey-BNB-LP tokens
-    function unstakeLp(uint256 amount) external {
+    function unstakeLp(uint256 amount) external whenNotPaused {
         require(amount > 0, "Amount must be greater than zero");
         require(
             amount <= participantData[msg.sender].stakedAmount,
@@ -96,14 +118,14 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
         participantData[msg.sender].stakedAmount -= amount;
         totalDeposits -= amount;
 
-        IERC20(address(LPToken)).safeTransfer(msg.sender, amount);
+        IERC20Upgradeable(address(LPToken)).safeTransfer(msg.sender, amount);
 
         emit Unstake(msg.sender, amount);
     }
 
     /// @notice Converts the supplied amount of ETH into Honey-BNB-LP tokens, then stakes it into the pool
     /// @dev Executes claimRewards before the staking to get a clean state for the roundMask and the rewards
-    function stakeFromEth() external payable nonReentrant {
+    function stakeFromEth() external payable nonReentrant whenNotPaused {
         require(msg.value > 0, "Amount must be greater than zero");
 
         // The first person to stake will initiate reward distribution
@@ -121,7 +143,10 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
         require(transferSuccess, "Failed to transfer unused ETH");
 
         // Send back unused tokens
-        IERC20(address(HoneyToken)).transfer(msg.sender, unusedTokens);
+        IERC20Upgradeable(address(HoneyToken)).transfer(
+            msg.sender,
+            unusedTokens
+        );
 
         claimRewards();
         participantData[msg.sender].stakedAmount += amount;
@@ -133,7 +158,7 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
     /// @notice Unstakes the desired amount of Honey-BNB-LP tokens from the pool, then converts it into ETH and sends it back to the caller
     /// @dev Executes claimRewards before the unstaking to get a clean state for the roundMask and the rewards
     /// @param amount The desired amount to unstake for an investor in Honey-BNB-LP tokens
-    function unstakeToEth(uint256 amount) external nonReentrant {
+    function unstakeToEth(uint256 amount) external nonReentrant whenNotPaused {
         require(amount > 0, "Amount must be greater than zero");
         require(
             amount <= participantData[msg.sender].stakedAmount,
@@ -170,6 +195,7 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
         external
         payable
         nonReentrant
+        whenNotPaused
     {
         require(tokenAmount > 0, "Amount must be greater than zero");
 
@@ -178,15 +204,20 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
             lastRoundMaskUpdateBlock = block.number;
 
         require(
-            IERC20(token).allowance(msg.sender, address(this)) >= tokenAmount,
+            IERC20Upgradeable(token).allowance(msg.sender, address(this)) >=
+                tokenAmount,
             "Token not approved"
         );
 
         // Pull tokens from caller
-        IERC20(token).transferFrom(msg.sender, address(this), tokenAmount);
+        IERC20Upgradeable(token).transferFrom(
+            msg.sender,
+            address(this),
+            tokenAmount
+        );
 
         // Allow DEX to spend supplied tokens
-        IERC20(token).approve(address(DEX), tokenAmount);
+        IERC20Upgradeable(token).approve(address(DEX), tokenAmount);
 
         // Convert supplied tokens into ETH
         uint256 ethAmount = DEX.convertTokenToEth(tokenAmount, token);
@@ -202,7 +233,10 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
         require(transferSuccess, "Failed to transfer unused ETH");
 
         // Send back unused tokens
-        IERC20(address(HoneyToken)).transfer(msg.sender, unusedTokens);
+        IERC20Upgradeable(address(HoneyToken)).transfer(
+            msg.sender,
+            unusedTokens
+        );
 
         claimRewards();
         participantData[msg.sender].stakedAmount += amount;
@@ -218,6 +252,7 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
     function unstakeToToken(address token, uint256 amount)
         external
         nonReentrant
+        whenNotPaused
     {
         require(amount > 0, "Amount must be greater than zero");
         require(
@@ -242,7 +277,7 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
         uint256 tokenAmount = DEX.convertEthToToken{value: ethAmount}(token);
 
         // Send tokens back to the caller
-        IERC20(token).transfer(msg.sender, tokenAmount);
+        IERC20Upgradeable(token).transfer(msg.sender, tokenAmount);
 
         emit Unstake(msg.sender, amount);
     }
@@ -271,7 +306,7 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
 
     /// @notice Claims the current rewards for an investor
     /// @dev The round mask is updated in the first place to update the current rewards for the investor. The rewards in honey tokens are then minted and transferred to the investor
-    function claimRewards() public {
+    function claimRewards() public whenNotPaused {
         updateRoundMask();
 
         if (participantData[msg.sender].rewardMask == 0) {
@@ -289,7 +324,7 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
             HoneyToken.claimTokens(rewardsToTransfer);
             participantData[msg.sender].claimedTokens += rewardsToTransfer;
 
-            IERC20(address(HoneyToken)).safeTransfer(
+            IERC20Upgradeable(address(HoneyToken)).safeTransfer(
                 msg.sender,
                 rewardsToTransfer
             );
@@ -329,4 +364,6 @@ contract HoneyBNBFarm is AccessControl, ReentrancyGuard {
         (bool transferSuccess, ) = payable(msg.sender).call{value: amount}("");
         require(transferSuccess, "Transfer failed");
     }
+
+    uint256[50] private __gap;
 }

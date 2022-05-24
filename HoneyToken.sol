@@ -1,10 +1,12 @@
 //SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.4;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/draft-ERC20Permit.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/draft-ERC20PermitUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20VotesUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 import "./Interfaces/IHoney.sol";
 
 /// @title Honey token ERC20 contract
@@ -13,9 +15,18 @@ import "./Interfaces/IHoney.sol";
 /// @dev AccessControl from openzeppelin implementation is used to handle the minter roles.
 /// User with DEFAULT_ADMIN_ROLE can grant MINTER_ROLE to any address.
 /// The DEFAULT_ADMIN_ROLE is intended to be a 2 out of 3 multisig wallet in the beginning and then be moved to governance in the future.
-contract HoneyToken is ERC20, ERC20Permit, ERC20Votes, AccessControl, IHoney {
+contract HoneyToken is
+    Initializable,
+    ERC20Upgradeable,
+    ERC20PermitUpgradeable,
+    ERC20VotesUpgradeable,
+    AccessControlUpgradeable,
+    PausableUpgradeable,
+    IHoney
+{
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     mapping(address => uint256) public override totalClaimed;
 
@@ -31,7 +42,7 @@ contract HoneyToken is ERC20, ERC20Permit, ERC20Votes, AccessControl, IHoney {
         string indexed _type
     );
 
-    constructor(
+    function initialize(
         string memory tokenName,
         string memory tokenSymbol,
         uint256 initialMintAmount,
@@ -40,7 +51,11 @@ contract HoneyToken is ERC20, ERC20Permit, ERC20Votes, AccessControl, IHoney {
         address _advisors,
         address _marketingReservesPool,
         address _devTeam
-    ) ERC20(tokenName, tokenSymbol) ERC20Permit(tokenName) {
+    ) public initializer {
+        __ERC20_init(tokenName, tokenSymbol);
+        __ERC20Permit_init(tokenName);
+        __Pausable_init();
+
         _mint(admin, initialMintAmount);
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         developmentFounders = _developmentFounders;
@@ -49,13 +64,25 @@ contract HoneyToken is ERC20, ERC20Permit, ERC20Votes, AccessControl, IHoney {
         devTeam = _devTeam;
     }
 
+    /// @notice pause
+    /// @dev pause the contract
+    function pause() external whenNotPaused onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    /// @notice unpause
+    /// @dev unpause the contract
+    function unpause() external whenPaused onlyRole(PAUSER_ROLE) {
+        _unpause();
+    }
+
     /// @notice Override for openzeppelin Governance
     /// @dev refer to https://docs.openzeppelin.com/contracts/4.x/governance
     function _afterTokenTransfer(
         address from,
         address to,
         uint256 amount
-    ) internal override(ERC20, ERC20Votes) {
+    ) internal override(ERC20Upgradeable, ERC20VotesUpgradeable) whenNotPaused {
         super._afterTokenTransfer(from, to, amount);
     }
 
@@ -63,7 +90,7 @@ contract HoneyToken is ERC20, ERC20Permit, ERC20Votes, AccessControl, IHoney {
     /// @dev refer to https://docs.openzeppelin.com/contracts/4.x/governance
     function _mint(address to, uint256 amount)
         internal
-        override(ERC20, ERC20Votes)
+        override(ERC20Upgradeable, ERC20VotesUpgradeable)
     {
         super._mint(to, amount);
     }
@@ -72,9 +99,28 @@ contract HoneyToken is ERC20, ERC20Permit, ERC20Votes, AccessControl, IHoney {
     /// @dev refer to https://docs.openzeppelin.com/contracts/4.x/governance
     function _burn(address account, uint256 amount)
         internal
-        override(ERC20, ERC20Votes)
+        override(ERC20Upgradeable, ERC20VotesUpgradeable)
     {
         super._burn(account, amount);
+    }
+
+    /// @notice transfer can get paused
+    function transfer(address to, uint256 amount)
+        public
+        override
+        whenNotPaused
+        returns (bool)
+    {
+        return super.transfer(to, amount);
+    }
+
+    /// @notice transferFrom can get paused
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public override whenNotPaused returns (bool) {
+        return super.transferFrom(from, to, amount);
     }
 
     /// @notice Token mining function for addresses with MINTER_ROLE.
@@ -113,7 +159,7 @@ contract HoneyToken is ERC20, ERC20Permit, ERC20Votes, AccessControl, IHoney {
     /// 3 go to the advisors
     /// 2 go to the marketing and reserves pool
     /// 12 go to the dev team
-    function claimAdditionalTokens() internal {
+    function claimAdditionalTokens() internal whenNotPaused {
         // the multiplier is cut off each 100 tokens
         uint256 multiplier = additionalTokenCounter / (100 * (10**decimals()));
         if (multiplier > 0) {
@@ -209,4 +255,6 @@ contract HoneyToken is ERC20, ERC20Permit, ERC20Votes, AccessControl, IHoney {
         devTeam = _devTeam;
         emit AdditionalMinterAddressChange(_devTeam, "Dev Team");
     }
+
+    uint256[50] private __gap;
 }

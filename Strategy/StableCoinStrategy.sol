@@ -1,22 +1,27 @@
 //SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.4;
 
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "../Config/BaseConfig.sol";
 
 /// @title Stablecoin strategy handler
 /// @notice The contract keeps track of the balances of stablecoin strategy investors and their reinvests (rewards) using EIP-1973
 /// @dev This contract is abstract and is intended to be inherited by grizzly.sol. State change functions are all internal which are called by other contracts functions
-abstract contract StableCoinStrategy is BaseConfig {
+abstract contract StableCoinStrategy is Initializable, BaseConfig {
     struct StablecoinStrategyParticipant {
         uint256 amount;
         uint256 rewardMask;
         uint256 totalReinvested;
     }
 
-    uint256 public stablecoinStrategyDeposits = 0;
-    uint256 private roundMask = 1;
+    uint256 public stablecoinStrategyDeposits;
+    uint256 private roundMask;
 
     mapping(address => StablecoinStrategyParticipant) private participantData;
+
+    function __StableCoinStrategy_init() internal initializer {
+        roundMask = 1;
+    }
 
     /// @notice Deposits the desired amount for a stablecoin strategy investor
     /// @dev The current round mask for rewards is updated before the deposit to have a clean state
@@ -38,13 +43,10 @@ abstract contract StableCoinStrategy is BaseConfig {
     /// @dev The current round mask for rewards is updated before the deposit to have a clean state
     /// @param amount The desired withdraw amount for an investor
     function stablecoinStrategyWithdraw(uint256 amount) internal {
-        require(amount > 0, "The amount of tokens must be greater than zero");
+        require(amount > 0, "TZ");
 
         uint256 currentBalance = getStablecoinStrategyBalance();
-        require(
-            amount <= currentBalance,
-            "Specified amount greater than current deposit"
-        );
+        require(amount <= currentBalance, "SD");
 
         uint256 currentAmount = participantData[msg.sender].amount;
         participantData[msg.sender].rewardMask = roundMask;
@@ -94,4 +96,6 @@ abstract contract StableCoinStrategy is BaseConfig {
     {
         return participantData[participant];
     }
+
+    uint256[50] private __gap;
 }

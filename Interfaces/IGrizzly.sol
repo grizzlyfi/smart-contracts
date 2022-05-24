@@ -70,15 +70,6 @@ interface IGrizzly {
         uint256 deadline
     ) external;
 
-    function stakeRewardsForBounty(
-        address[] memory fromToken,
-        address[] memory toToken,
-        uint256[] memory amountIn,
-        uint256[] memory amountOut,
-        uint256 slippage,
-        uint256 deadline
-    ) external returns (uint256 rewardedTokenA, uint256 rewardedTokenB);
-
     function stakeRewards(
         address[] memory fromToken,
         address[] memory toToken,
@@ -98,8 +89,4 @@ interface IGrizzly {
     function updateBeeEfficiencyLevel(uint256 _beeEfficiencyThreshold) external;
 
     function recoverFunds(uint256 amount) external;
-
-    function setEmergencyState() external;
-
-    function withdrawEmergency() external returns (uint256);
 }

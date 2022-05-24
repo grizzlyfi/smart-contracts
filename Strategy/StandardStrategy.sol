@@ -1,15 +1,16 @@
 //SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.4;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "../Config/BaseConfig.sol";
 
 /// @title Standard strategy handler
 /// @notice The contract keeps track of the balances of the lp tokens and their reinvests (rewards) including the honey rewards using EIP-1973
 /// @dev This contract is abstract and is intended to be inherited by grizzly.sol. Honey rewards and lp rewards are handled using a round mask
-abstract contract StandardStrategy is BaseConfig {
-    using SafeERC20 for IERC20;
+abstract contract StandardStrategy is Initializable, BaseConfig {
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
     struct StandardStrategyParticipant {
         uint256 amount;
@@ -19,11 +20,11 @@ abstract contract StandardStrategy is BaseConfig {
         uint256 totalReinvested;
     }
 
-    uint256 public lpRoundMask = 1;
-    uint256 public standardStrategyDeposits = 0;
+    uint256 public lpRoundMask;
+    uint256 public standardStrategyDeposits;
 
-    uint256 public totalHoneyRewards = 0;
-    uint256 private honeyRoundMask = 1;
+    uint256 public totalHoneyRewards;
+    uint256 private honeyRoundMask;
 
     event StandardStrategyClaimHoneyEvent(
         address indexed user,
@@ -31,6 +32,11 @@ abstract contract StandardStrategy is BaseConfig {
     );
 
     mapping(address => StandardStrategyParticipant) private participantData;
+
+    function __StandardStrategy_init() internal initializer {
+        lpRoundMask = 1;
+        honeyRoundMask = 1;
+    }
 
     /// @notice Deposits the desired amount for a standard strategy investor
     /// @dev Pending lp rewards are rewarded and the investors rewardMask is set again to the current roundMask
@@ -57,15 +63,12 @@ abstract contract StandardStrategy is BaseConfig {
     /// @dev Pending lp rewards are rewarded and the investors rewardMask is set again to the current roundMask
     /// @param amount The desired withdraw amount for an investor
     function standardStrategyWithdraw(uint256 amount) internal {
-        require(amount > 0, "The amount of tokens must be greater than zero");
+        require(amount > 0, "TZ");
 
         updateStandardRewardMask();
         uint256 currentDeposit = getStandardStrategyBalance();
         uint256 currentAmount = participantData[msg.sender].amount;
-        require(
-            amount <= currentDeposit,
-            "Specified amount greater than current deposit"
-        );
+        require(amount <= currentDeposit, "SD");
 
         standardStrategyDeposits =
             standardStrategyDeposits +
@@ -117,10 +120,14 @@ abstract contract StandardStrategy is BaseConfig {
     /// @dev Can be called static to get the current standard strategy honey pending reward
     /// @return The pending rewards transfered to the investor
     function standardStrategyClaimHoney() public returns (uint256) {
+        isNotPaused();
         updateStandardRewardMask();
         uint256 pendingRewards = participantData[msg.sender].pendingRewards;
         participantData[msg.sender].pendingRewards = 0;
-        IERC20(address(HoneyToken)).safeTransfer(msg.sender, pendingRewards);
+        IERC20Upgradeable(address(HoneyToken)).safeTransfer(
+            msg.sender,
+            pendingRewards
+        );
         emit StandardStrategyClaimHoneyEvent(msg.sender, pendingRewards);
         return pendingRewards;
     }
@@ -155,4 +162,6 @@ abstract contract StandardStrategy is BaseConfig {
     {
         return participantData[participant];
     }
+
+    uint256[50] private __gap;
 }

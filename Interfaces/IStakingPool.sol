@@ -12,7 +12,9 @@ interface IStakingPool {
             uint256 pendingLp,
             uint256 claimedHoney,
             uint256 claimedLp,
-            uint256 honeyMintMask
+            uint256 honeyMintMask,
+            uint256 pendingHoneyMint,
+            uint256 claimedHoneyMint
         );
 
     function stake(uint256 amount) external;
@@ -27,9 +29,11 @@ interface IStakingPool {
 
     function rewardLP(uint256 amount) external;
 
-    function claimLpTokens(uint256 amount, address to)
-        external
-        returns (uint256 stakedTokenOut, uint256 bnbOut);
+    function claimLpTokens(
+        uint256 amount,
+        uint256 additionalHoneyAmount,
+        address to
+    ) external returns (uint256 stakedTokenOut, uint256 bnbOut);
 
     function updateLpRewardMask() external;
 

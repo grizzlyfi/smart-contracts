@@ -8,37 +8,62 @@ import "./Interfaces/IUniswapV2Factory.sol";
 import "./Interfaces/IDEX.sol";
 import "./Interfaces/IMasterChef.sol";
 import "./Interfaces/IHoney.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 /// @title DEX proxy
 /// @notice The DEX proxy is responsible to convert the different tokens and the native coin. It uses the pancakeswap swap router to exchange these tokens
 /// @dev All swaps are done on behalf of this contract. This means all tokens are owned by this contract and are then divided for the different investors in the strategy contracts
-contract DEX is IDEX, ReentrancyGuard, AccessControl {
+contract DEX is
+    Initializable,
+    ReentrancyGuardUpgradeable,
+    AccessControlUpgradeable,
+    IDEX,
+    PausableUpgradeable
+{
     // is necessary to receive unused bnb from the swaprouter
     receive() external payable {}
 
-    using SafeERC20 for IERC20;
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
     bytes32 public constant FUNDS_RECOVERY_ROLE =
         keccak256("FUNDS_RECOVERY_ROLE");
+    bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     uint256 private constant MAX_PERCENTAGE = 100000;
 
     IUniswapV2Router01 public override SwapRouter;
     IMasterChef public StakingContract;
 
-    constructor(
+    mapping(address => address[]) public pathFromTokenToEth;
+    mapping(address => address[]) public pathFromEthToToken;
+
+    function initialize(
         address _SwapRouterAddress,
         address _StakingContractAddress,
         address _Admin
-    ) {
+    ) public initializer {
         SwapRouter = IUniswapV2Router01(_SwapRouterAddress);
         StakingContract = IMasterChef(_StakingContractAddress);
-
+        __Pausable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, _Admin);
+    }
+
+    /// @notice pause
+    /// @dev pause the contract
+    function pause() external whenNotPaused onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    /// @notice unpause
+    /// @dev unpause the contract
+    function unpause() external whenPaused onlyRole(PAUSER_ROLE) {
+        _unpause();
     }
 
     /// @notice Converts bnbs to the two tokens for liquidity providing. Then provides these tokens to the liquidity pool and receives lp tokens
@@ -51,6 +76,7 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
         external
         payable
         override
+        whenNotPaused
         returns (
             uint256 lpAmount,
             uint256 unusedTokenA,
@@ -72,32 +98,41 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
             return (lpAmount, unusedTokenA, unusedTokenB);
         }
 
-        IERC20 TokenA = IERC20(LPToken.token0());
+        IERC20Upgradeable TokenA = IERC20Upgradeable(LPToken.token0());
 
-        IERC20 TokenB = IERC20(LPToken.token1());
+        IERC20Upgradeable TokenB = IERC20Upgradeable(LPToken.token1());
 
-        address[] memory pairs = new address[](2);
-        pairs[0] = SwapRouter.WETH();
+        address[] memory _pathFromEthToTokenA = pathFromEthToToken[
+            address(TokenA)
+        ];
+        address[] memory _pathFromEthToTokenB = pathFromEthToToken[
+            address(TokenB)
+        ];
 
-        pairs[1] = address(TokenA);
+        require(
+            _pathFromEthToTokenA.length >= 2 &&
+                _pathFromEthToTokenB.length >= 2,
+            "TN"
+        );
+
         uint256 tokenAValue = SwapRouter.swapExactETHForTokens{
             value: msg.value / 2
-        }(1, pairs, address(this), block.timestamp + 1)[1];
+        }(1, _pathFromEthToTokenA, address(this), block.timestamp + 1)[
+            _pathFromEthToTokenA.length - 1
+        ];
 
-        pairs[1] = address(TokenB);
         uint256 tokenBValue = SwapRouter.swapExactETHForTokens{
             value: msg.value / 2
-        }(1, pairs, address(this), block.timestamp + 1)[1];
+        }(1, _pathFromEthToTokenB, address(this), block.timestamp + 1)[
+            _pathFromEthToTokenB.length - 1
+        ];
 
         uint256 allowanceA = TokenA.allowance(
             address(this),
             address(SwapRouter)
         );
         if (allowanceA < tokenAValue) {
-            require(
-                TokenA.approve(address(SwapRouter), tokenAValue),
-                "Failed to approve SwapRouter"
-            );
+            require(TokenA.approve(address(SwapRouter), tokenAValue), "FS");
         }
 
         uint256 allowanceB = TokenB.allowance(
@@ -105,10 +140,7 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
             address(SwapRouter)
         );
         if (allowanceB < tokenBValue) {
-            require(
-                TokenB.approve(address(SwapRouter), tokenBValue),
-                "Failed to approve SwapRouter"
-            );
+            require(TokenB.approve(address(SwapRouter), tokenBValue), "FS");
         }
 
         (uint256 usedTokenA, uint256 usedTokenB, uint256 lpValue) = SwapRouter
@@ -142,29 +174,30 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
         public
         payable
         override
+        whenNotPaused
         returns (
             uint256 lpAmount,
             uint256 unusedEth,
             uint256 unusedToken
         )
     {
-        IERC20 Token = IERC20(token);
+        IERC20Upgradeable Token = IERC20Upgradeable(token);
 
-        address[] memory pairs = new address[](2);
-        pairs[0] = SwapRouter.WETH();
+        address[] memory _pathFromEthToToken = pathFromEthToToken[
+            address(Token)
+        ];
 
-        pairs[1] = address(Token);
+        require(_pathFromEthToToken.length >= 2, "TN");
 
         uint256 tokenValue = SwapRouter.swapExactETHForTokens{
             value: msg.value / 2
-        }(1, pairs, address(this), block.timestamp + 1)[1];
+        }(1, _pathFromEthToToken, address(this), block.timestamp + 1)[
+            _pathFromEthToToken.length - 1
+        ];
 
         uint256 allowance = Token.allowance(address(this), address(SwapRouter));
         if (allowance < tokenValue) {
-            require(
-                Token.approve(address(SwapRouter), tokenValue),
-                "Failed to approve SwapRouter"
-            );
+            require(Token.approve(address(SwapRouter), tokenValue), "FS");
         }
 
         (uint256 usedToken, uint256 usedEth, uint256 lpValue) = SwapRouter
@@ -186,7 +219,7 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
         (bool transferSuccess, ) = payable(msg.sender).call{value: unusedEth}(
             ""
         );
-        require(transferSuccess, "Transfer failed");
+        require(transferSuccess, "TF");
     }
 
     /// @notice Converts lp tokens back to bnbs. First removes liquidity using the lp tokens and then swaps the tokens to bnbs
@@ -197,6 +230,7 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
     function convertPairLpToEth(address lpAddress, uint256 amount)
         external
         override
+        whenNotPaused
         returns (uint256 ethAmount)
     {
         IUniswapV2Pair LPToken = IUniswapV2Pair(lpAddress);
@@ -210,21 +244,35 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
             return ethAmount;
         }
 
-        IERC20(lpAddress).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20Upgradeable(lpAddress).safeTransferFrom(
+            msg.sender,
+            address(this),
+            amount
+        );
 
-        IERC20 TokenA = IERC20(LPToken.token0());
+        IERC20Upgradeable TokenA = IERC20Upgradeable(LPToken.token0());
 
-        IERC20 TokenB = IERC20(LPToken.token1());
+        IERC20Upgradeable TokenB = IERC20Upgradeable(LPToken.token1());
+
+        address[] memory _pathFromTokenAToEth = pathFromTokenToEth[
+            address(TokenA)
+        ];
+        address[] memory _pathFromTokenBToEth = pathFromTokenToEth[
+            address(TokenB)
+        ];
+
+        require(
+            _pathFromTokenAToEth.length >= 2 &&
+                _pathFromTokenBToEth.length >= 2,
+            "TN"
+        );
 
         uint256 allowance = LPToken.allowance(
             address(this),
             address(SwapRouter)
         );
         if (allowance < amount) {
-            require(
-                LPToken.approve(address(SwapRouter), amount),
-                "Failed to approve SwapRouter"
-            );
+            require(LPToken.approve(address(SwapRouter), amount), "FS");
         }
 
         (uint256 tokenABalance, uint256 tokenBBalance) = SwapRouter
@@ -238,50 +286,38 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
                 block.timestamp + 1
             );
 
-        address[] memory pairs = new address[](2);
-        pairs[1] = SwapRouter.WETH();
-
-        pairs[0] = address(TokenA);
-
         uint256 allowanceA = TokenA.allowance(
             address(this),
             address(SwapRouter)
         );
         if (allowanceA < tokenABalance) {
-            require(
-                TokenA.approve(address(SwapRouter), tokenABalance),
-                "Failed to approve SwapRouter"
-            );
+            require(TokenA.approve(address(SwapRouter), tokenABalance), "FS");
         }
 
         uint256 tokenAEth = SwapRouter.swapExactTokensForETH(
             tokenABalance,
             1,
-            pairs,
+            _pathFromTokenAToEth,
             payable(msg.sender),
             block.timestamp + 1
-        )[1];
+        )[_pathFromTokenAToEth.length - 1];
 
         uint256 allowanceB = TokenB.allowance(
             address(this),
             address(SwapRouter)
         );
         if (allowanceB < tokenBBalance) {
-            require(
-                TokenB.approve(address(SwapRouter), tokenBBalance),
-                "Failed to approve SwapRouter"
-            );
+            require(TokenB.approve(address(SwapRouter), tokenBBalance), "FS");
         }
 
         // Convert Token B into ETH
-        pairs[0] = address(TokenB);
         uint256 tokenBEth = SwapRouter.swapExactTokensForETH(
             tokenBBalance,
             1,
-            pairs,
+            _pathFromTokenBToEth,
             payable(msg.sender),
             block.timestamp + 1
-        )[1];
+        )[_pathFromTokenBToEth.length - 1];
 
         return tokenAEth + tokenBEth;
     }
@@ -294,6 +330,7 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
     function convertTokenLpToEth(address token, uint256 amount)
         public
         override
+        whenNotPaused
         returns (uint256 ethAmount)
     {
         address lpToken = IUniswapV2Factory(SwapRouter.factory()).getPair(
@@ -303,19 +340,26 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
 
         IUniswapV2Pair LPToken = IUniswapV2Pair(lpToken);
 
-        IERC20(lpToken).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20Upgradeable(lpToken).safeTransferFrom(
+            msg.sender,
+            address(this),
+            amount
+        );
 
-        IERC20 Token = IERC20(token);
+        IERC20Upgradeable Token = IERC20Upgradeable(token);
+
+        address[] memory _pathFromTokenToEth = pathFromTokenToEth[
+            address(Token)
+        ];
+
+        require(_pathFromTokenToEth.length >= 2, "TN");
 
         uint256 allowanceLP = LPToken.allowance(
             address(this),
             address(SwapRouter)
         );
         if (allowanceLP < amount) {
-            require(
-                LPToken.approve(address(SwapRouter), amount),
-                "Failed to approve SwapRouter"
-            );
+            require(LPToken.approve(address(SwapRouter), amount), "FS");
         }
 
         (uint256 tokenBalance, uint256 ethBalance) = SwapRouter
@@ -328,31 +372,23 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
                 block.timestamp + 1
             );
 
-        address[] memory pairs = new address[](2);
-        pairs[1] = SwapRouter.WETH();
-
-        pairs[0] = address(Token);
-
         uint256 allowance = Token.allowance(address(this), address(SwapRouter));
         if (allowance < tokenBalance) {
-            require(
-                Token.approve(address(SwapRouter), tokenBalance),
-                "Failed to approve SwapRouter"
-            );
+            require(Token.approve(address(SwapRouter), tokenBalance), "FS");
         }
 
         uint256 tokenEth = SwapRouter.swapExactTokensForETH(
             tokenBalance,
             1,
-            pairs,
+            _pathFromTokenToEth,
             payable(msg.sender),
             block.timestamp + 1
-        )[1];
+        )[_pathFromTokenToEth.length - 1];
 
         (bool transferSuccess, ) = payable(msg.sender).call{value: ethBalance}(
             ""
         );
-        require(transferSuccess, "Transfer failed");
+        require(transferSuccess, "TF");
 
         return tokenEth + ethBalance;
     }
@@ -365,18 +401,17 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
         external
         payable
         override
+        whenNotPaused
         returns (uint256 tokenAmount)
     {
-        address[] memory pairs = new address[](2);
-        pairs[0] = SwapRouter.WETH();
-
-        pairs[1] = token;
+        address[] memory _pathFromEthToToken = pathFromEthToToken[token];
+        require(_pathFromEthToToken.length >= 2, "TN");
         tokenAmount = SwapRouter.swapExactETHForTokens{value: msg.value}(
             1,
-            pairs,
+            _pathFromEthToToken,
             msg.sender,
             block.timestamp + 1
-        )[1];
+        )[_pathFromEthToToken.length - 1];
     }
 
     /// @notice Converts a specific token to bnbs
@@ -387,33 +422,30 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
     function convertTokenToEth(uint256 amount, address token)
         external
         override
+        whenNotPaused
         returns (uint256 ethAmount)
     {
-        IERC20 tokenInstance = IERC20(token);
-        tokenInstance.safeTransferFrom(msg.sender, address(this), amount);
+        address[] memory _pathFromTokenToEth = pathFromTokenToEth[token];
+        require(_pathFromTokenToEth.length >= 2, "TN");
 
-        address[] memory pairs = new address[](2);
-        pairs[0] = token;
-        pairs[1] = SwapRouter.WETH();
+        IERC20Upgradeable tokenInstance = IERC20Upgradeable(token);
+        tokenInstance.safeTransferFrom(msg.sender, address(this), amount);
 
         uint256 allowance = tokenInstance.allowance(
             address(this),
             address(SwapRouter)
         );
         if (allowance < amount) {
-            require(
-                tokenInstance.approve(address(SwapRouter), amount),
-                "Failed to approve SwapRouter"
-            );
+            require(tokenInstance.approve(address(SwapRouter), amount), "FS");
         }
 
         ethAmount = SwapRouter.swapExactTokensForETH(
             amount,
             1,
-            pairs,
+            _pathFromTokenToEth,
             payable(msg.sender),
             block.timestamp + 1
-        )[1];
+        )[_pathFromTokenToEth.length - 1];
     }
 
     /// @notice Tells how many tokens can be bought with one bnb
@@ -425,11 +457,13 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
         override
         returns (uint256)
     {
-        address[] memory pairs = new address[](2);
-        pairs[0] = SwapRouter.WETH();
-        pairs[1] = token;
+        address[] memory _pathFromEthToToken = pathFromEthToToken[token];
+        require(_pathFromEthToToken.length >= 2, "TN");
 
-        return SwapRouter.getAmountsOut(1e18, pairs)[1];
+        return
+            SwapRouter.getAmountsOut(1e18, _pathFromEthToToken)[
+                _pathFromEthToToken.length
+            ];
     }
 
     /// @notice Gets the total pending reward from pancakeswap master chef
@@ -444,11 +478,19 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
 
         IUniswapV2Pair LPToken = IUniswapV2Pair(lpToken);
 
-        IERC20 TokenA = IERC20(LPToken.token0());
+        IERC20Upgradeable TokenA = IERC20Upgradeable(LPToken.token0());
 
-        IERC20 TokenB = IERC20(LPToken.token1());
+        IERC20Upgradeable TokenB = IERC20Upgradeable(LPToken.token1());
 
-        IERC20 RewardToken = IERC20(StakingContract.cake());
+        require(
+            pathFromEthToToken[address(TokenA)].length >= 2 &&
+                pathFromEthToToken[address(TokenB)].length >= 2,
+            "TN"
+        );
+
+        IERC20Upgradeable RewardToken = IERC20Upgradeable(
+            StakingContract.cake()
+        );
 
         uint256 pendingRewardToken = StakingContract.pendingCake(
             poolID,
@@ -457,20 +499,42 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
 
         if (pendingRewardToken == 0) return 0;
 
-        address[] memory pairs = new address[](3);
-        pairs[0] = address(RewardToken);
-        pairs[1] = SwapRouter.WETH();
+        address[] memory pairsTokenA = new address[](
+            pathFromEthToToken[address(TokenA)].length + 1
+        );
 
-        pairs[2] = address(TokenA);
+        pairsTokenA[0] = address(RewardToken);
+
+        for (
+            uint256 i = 1;
+            i <= pathFromEthToToken[address(TokenA)].length;
+            i++
+        ) {
+            pairsTokenA[i] = pathFromEthToToken[address(TokenA)][i - 1];
+        }
+
         uint256 tokenAValue = SwapRouter.getAmountsOut(
             pendingRewardToken / 2,
-            pairs
+            pairsTokenA
         )[2];
 
-        pairs[2] = address(TokenB);
+        address[] memory pairsTokenB = new address[](
+            pathFromEthToToken[address(TokenB)].length + 1
+        );
+
+        pairsTokenB[0] = address(RewardToken);
+
+        for (
+            uint256 i = 1;
+            i <= pathFromEthToToken[address(TokenB)].length;
+            i++
+        ) {
+            pairsTokenB[i] = pathFromEthToToken[address(TokenB)][i - 1];
+        }
+
         uint256 tokenBValue = SwapRouter.getAmountsOut(
             pendingRewardToken / 2,
-            pairs
+            pairsTokenB
         )[2];
 
         (uint256 reserveA, uint256 reserveB, ) = LPToken.getReserves();
@@ -513,9 +577,9 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
             fromToken.length == toToken.length &&
                 fromToken.length == amountIn.length &&
                 fromToken.length == amountOut.length,
-            "Invalid slippage parameters"
+            "IS"
         );
-        require(slippage <= MAX_PERCENTAGE, "Max slippage is MAX_PERCENTAGE");
+        require(slippage <= MAX_PERCENTAGE, "MP");
 
         address[] memory pairs = new address[](2);
 
@@ -529,7 +593,7 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
             require(
                 ((MAX_PERCENTAGE - slippage) * amountOut[i]) / MAX_PERCENTAGE <
                     currentAmoutOut,
-                "Price slippage too high"
+                "SH"
             );
         }
     }
@@ -546,7 +610,50 @@ contract DEX is IDEX, ReentrancyGuard, AccessControl {
             (bool transferSuccess, ) = payable(msg.sender).call{value: balance}(
                 ""
             );
-            require(transferSuccess, "Transfer failed");
+            require(transferSuccess, "TF");
         }
     }
+
+    /// @notice Sets the swapping path for a token
+    /// @dev Requires non zero address for token and a swap path to eth and from eth with length >= 2, only updater role can set these variables
+    /// @param token The token address for which the path is set
+    /// @param pathFromEth The swapping path when converting from eth to token
+    /// @param pathToEth The swapping path when converting from token to eth
+    function setSwapPathForToken(
+        address token,
+        address[] memory pathFromEth,
+        address[] memory pathToEth
+    ) public onlyRole(UPDATER_ROLE) {
+        require(token != address(0), "TA");
+        require(pathFromEth.length >= 2, "PI");
+        require(pathToEth.length >= 2, "PI");
+        require(pathFromEth[0] == SwapRouter.WETH(), "FW");
+        require(pathFromEth[pathFromEth.length - 1] == token, "LT");
+        require(pathToEth[0] == token, "FP");
+        require(pathToEth[pathToEth.length - 1] == SwapRouter.WETH(), "LW");
+        pathFromEthToToken[token] = pathFromEth;
+        pathFromTokenToEth[token] = pathToEth;
+    }
+
+    /// @notice Sets the swapping path for a token with bulk
+    /// @dev Take care of out of gas issues as there is a for loop over the input arrays, each index of the tokens array needs to be corresponding to the same index in the paths array
+    /// @param tokens The token addresses for which the paths are set
+    /// @param pathsFromEth The swapping paths from eth to token according to Uniswap paths
+    /// @param pathsToEth The swapping paths from token to eth according to Uniswap paths
+    function setSwapPathForTokenBulk(
+        address[] memory tokens,
+        address[][] memory pathsFromEth,
+        address[][] memory pathsToEth
+    ) external onlyRole(UPDATER_ROLE) {
+        require(
+            tokens.length == pathsFromEth.length &&
+                tokens.length == pathsToEth.length,
+            "AS"
+        );
+        for (uint256 i = 0; i < tokens.length; i++) {
+            setSwapPathForToken(tokens[i], pathsFromEth[i], pathsToEth[i]);
+        }
+    }
+
+    uint256[50] private __gap;
 }

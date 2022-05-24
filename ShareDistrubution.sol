@@ -2,12 +2,14 @@
 pragma solidity ^0.8.4;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 /// @title Share distribution
 /// @notice This contract enables the distribution of honey tokens sent to it based on the amount of shares of its participants
 /// @dev The share of honey rewards is done with roundmasks according to EIP-1973
-contract ShareDistrubution is AccessControl {
+contract ShareDistrubution is Initializable, AccessControlUpgradeable, PausableUpgradeable {
     struct ParticipantData {
         uint256 shares;
         uint256 rewardMask;
@@ -15,6 +17,7 @@ contract ShareDistrubution is AccessControl {
     }
 
     bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     uint256 private constant DECIMAL_OFFSET = 10e12;
 
     IERC20 public Token;
@@ -27,14 +30,30 @@ contract ShareDistrubution is AccessControl {
 
     event Claim(address indexed participant, uint256 amount);
 
-    constructor(address admin, address tokenAddress) {
+    function initialize(address admin, address tokenAddress)
+        public
+        initializer
+    {
         Token = IERC20(tokenAddress);
         _setupRole(DEFAULT_ADMIN_ROLE, admin);
+        __Pausable_init();
+    }
+
+    /// @notice pause
+    /// @dev pause the contract
+    function pause() external whenNotPaused onlyRole(PAUSER_ROLE){
+      _pause();
+    }
+
+    /// @notice unpause
+    /// @dev unpause the contract
+    function unpause() external whenPaused onlyRole(PAUSER_ROLE){
+      _unpause();
     }
 
     /// @notice Claims the tokens made available to the caller
     /// @dev Reward mask are updated before claiming in order to use all available tokens. Reverts if nothing to claim
-    function claimRewards() public {
+    function claimRewards() public whenNotPaused {
         updateRoundMask();
 
         uint256 claimedRewards = participantData[msg.sender].unclaimedRewards +
@@ -119,4 +138,6 @@ contract ShareDistrubution is AccessControl {
 
         participantData[participant].shares = shares;
     }
+
+    uint256[50] private __gap;
 }

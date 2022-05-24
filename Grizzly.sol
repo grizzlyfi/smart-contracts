@@ -2,15 +2,17 @@
 pragma solidity ^0.8.4;
 
 import "./DEX.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./Strategy/GrizzlyStrategy.sol";
 import "./Strategy/StableCoinStrategy.sol";
 import "./Strategy/StandardStrategy.sol";
 import "./Config/BaseConfig.sol";
 import "./Interfaces/IGrizzly.sol";
 import "./Oracle/AveragePriceOracle.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 /// @title The Grizzly contract
 /// @notice This contract put together all abstract contracts and is deployed once for each token pair (hive). It allows the user to deposit and withdraw funds to the predefined hive. In addition, rewards can be staked using stakeReward.
@@ -19,18 +21,19 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 /// The DEFAULT_ADMIN_ROLE is intended to be a 2 out of 3 multisig wallet in the beginning and then be moved to governance in the future.
 /// The Contract uses ReentrancyGuard from openzeppelin for all transactions that transfer bnbs to the msg.sender
 contract Grizzly is
+    Initializable,
     BaseConfig,
-    ReentrancyGuard,
     GrizzlyStrategy,
     StableCoinStrategy,
     StandardStrategy,
+    ReentrancyGuardUpgradeable,
     IGrizzly
 {
     receive() external payable {}
 
-    using SafeERC20 for IERC20;
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
-    constructor(
+    function initialize(
         address _Admin,
         address _StakingContractAddress,
         address _StakingPoolAddress,
@@ -41,8 +44,8 @@ contract Grizzly is
         address _AveragePriceOracleAddress,
         address _DEXAddress,
         uint256 _PoolID
-    )
-        BaseConfig(
+    ) public initializer {
+        __BaseConfig_init(
             _Admin,
             _StakingContractAddress,
             _StakingPoolAddress,
@@ -53,14 +56,16 @@ contract Grizzly is
             _AveragePriceOracleAddress,
             _DEXAddress,
             _PoolID
-        )
-    {
+        );
+        __StandardStrategy_init();
+        __GrizzlyStrategy_init();
+        __StableCoinStrategy_init();
+        __Pausable_init();
+
         beeEfficiencyLevel = 500 ether;
-        isEmergency = false;
     }
 
     uint256 public beeEfficiencyLevel;
-    bool public isEmergency;
 
     mapping(address => Strategy) public userStrategy;
     uint256 public totalUnusedTokenA;
@@ -72,11 +77,6 @@ contract Grizzly is
     uint256 public lastStakeRewardsDuration;
     uint256 public lastStakeRewardsDeposit;
     uint256 public lastStakeRewardsCake;
-
-    modifier emergency(bool _state) {
-        require(isEmergency == _state, "Not allowed in this emergency state");
-        _;
-    }
 
     event DepositEvent(
         address indexed user,
@@ -101,6 +101,20 @@ contract Grizzly is
         uint256 stablecoinShare
     );
 
+    /// @notice pause
+    /// @dev pause the contract
+    function pause() external onlyRole(PAUSER_ROLE) {
+        isNotPaused();
+        _pause();
+    }
+
+    /// @notice unpause
+    /// @dev unpause the contract
+    function unpause() external onlyRole(PAUSER_ROLE) {
+        isPaused();
+        _unpause();
+    }
+
     /// @notice The public deposit function
     /// @dev This is a payable function where the user can deposit bnbs
     /// @param referralGiver The address of the account that provided referral
@@ -119,15 +133,9 @@ contract Grizzly is
         uint256[] memory amountOut,
         uint256 slippage,
         uint256 deadline
-    )
-        external
-        payable
-        override
-        nonReentrant
-        emergency(false)
-        returns (uint256)
-    {
-        require(deadline > block.timestamp, "Deadline expired");
+    ) external payable override nonReentrant returns (uint256) {
+        isNotPaused();
+        require(deadline > block.timestamp, "DE");
         DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         return _deposit(msg.value, referralGiver);
     }
@@ -154,10 +162,11 @@ contract Grizzly is
         uint256[] memory amountOut,
         uint256 slippage,
         uint256 deadline
-    ) external override nonReentrant emergency(false) returns (uint256) {
-        require(deadline > block.timestamp, "Deadline expired");
+    ) external override nonReentrant returns (uint256) {
+        isNotPaused();
+        require(deadline > block.timestamp, "DE");
         DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
-        IERC20 TokenInstance = IERC20(token);
+        IERC20Upgradeable TokenInstance = IERC20Upgradeable(token);
         TokenInstance.safeTransferFrom(msg.sender, address(this), amount);
         if (TokenInstance.allowance(address(this), address(DEX)) < amount) {
             TokenInstance.approve(address(DEX), amount);
@@ -184,15 +193,13 @@ contract Grizzly is
         uint256[] memory amountOut,
         uint256 slippage,
         uint256 deadline
-    ) external override nonReentrant emergency(false) returns (uint256) {
-        require(deadline > block.timestamp, "Deadline expired");
+    ) external override nonReentrant returns (uint256) {
+        isNotPaused();
+        require(deadline > block.timestamp, "DE");
         DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         _stakeRewards();
         uint256 amountWithdrawn = _withdraw(amount);
-        (bool transferSuccess, ) = payable(msg.sender).call{
-            value: amountWithdrawn
-        }("");
-        require(transferSuccess, "Transfer failed");
+        _transferEth(msg.sender, amountWithdrawn);
         return amountWithdrawn;
     }
 
@@ -212,8 +219,9 @@ contract Grizzly is
         uint256[] memory amountOut,
         uint256 slippage,
         uint256 deadline
-    ) external override nonReentrant emergency(false) returns (uint256) {
-        require(deadline > block.timestamp, "Deadline expired");
+    ) external override nonReentrant returns (uint256) {
+        isNotPaused();
+        require(deadline > block.timestamp, "DE");
         DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         _stakeRewards();
         uint256 currentDeposits = 0;
@@ -229,10 +237,7 @@ contract Grizzly is
         uint256 amountWithdrawn = 0;
         if (currentDeposits > 0) {
             amountWithdrawn = _withdraw(currentDeposits);
-            (bool transferSuccess, ) = payable(msg.sender).call{
-                value: amountWithdrawn
-            }("");
-            require(transferSuccess, "Transfer failed");
+            _transferEth(msg.sender, amountWithdrawn);
         }
         return amountWithdrawn;
     }
@@ -257,15 +262,16 @@ contract Grizzly is
         uint256[] memory amountOut,
         uint256 slippage,
         uint256 deadline
-    ) external override nonReentrant emergency(false) returns (uint256) {
-        require(deadline > block.timestamp, "Deadline expired");
+    ) external override nonReentrant returns (uint256) {
+        isNotPaused();
+        require(deadline > block.timestamp, "DE");
         DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         _stakeRewards();
         uint256 amountWithdrawn = _withdraw(amount);
         uint256 tokenAmountWithdrawn = DEX.convertEthToToken{
             value: amountWithdrawn
         }(token);
-        IERC20(token).safeTransfer(msg.sender, tokenAmountWithdrawn);
+        IERC20Upgradeable(token).safeTransfer(msg.sender, tokenAmountWithdrawn);
         return tokenAmountWithdrawn;
     }
 
@@ -278,7 +284,7 @@ contract Grizzly is
         internal
         returns (uint256)
     {
-        require(amount > 0, "Deposit needs to be larger than 0");
+        require(amount > 0, "DL");
         _stakeRewards();
 
         (uint256 lpValue, uint256 unusedTokenA, uint256 unusedTokenB) = DEX
@@ -344,12 +350,10 @@ contract Grizzly is
         uint256[] memory amountOut,
         uint256 slippage,
         uint256 deadline
-    ) external override nonReentrant emergency(false) {
-        require(deadline > block.timestamp, "Deadline expired");
-        require(
-            userStrategy[msg.sender] != toStrategy,
-            "User already in selected strategy"
-        );
+    ) external override nonReentrant {
+        isNotPaused();
+        require(deadline > block.timestamp, "DE");
+        require(userStrategy[msg.sender] != toStrategy, "UA");
         DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
 
         _stakeRewards();
@@ -391,41 +395,6 @@ contract Grizzly is
         userStrategy[msg.sender] = toStrategy;
     }
 
-    /// @notice Stake rewards public function and sends unused tokens to caller
-    /// @dev Executes the restaking of the rewards. Adds a reentrant guard
-    /// @param fromToken The list of token addresses from which the conversion is done
-    /// @param toToken The list of token addresses to which the conversion is done
-    /// @param amountIn The list of quoted input amounts
-    /// @param amountOut The list of output amounts for each quoted input amount
-    /// @param slippage The allowed slippage
-    /// @param deadline The deadline for the transaction
-    /// @return rewardedTokenA The amount of the rewarded token A
-    /// @return rewardedTokenB The amount of the rewarded token B
-    function stakeRewardsForBounty(
-        address[] memory fromToken,
-        address[] memory toToken,
-        uint256[] memory amountIn,
-        uint256[] memory amountOut,
-        uint256 slippage,
-        uint256 deadline
-    )
-        external
-        override
-        nonReentrant
-        emergency(false)
-        returns (uint256 rewardedTokenA, uint256 rewardedTokenB)
-    {
-        require(deadline > block.timestamp, "Deadline expired");
-        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
-        _stakeRewards();
-        TokenA.safeTransfer(msg.sender, totalUnusedTokenA);
-        TokenB.safeTransfer(msg.sender, totalUnusedTokenB);
-        rewardedTokenA = totalUnusedTokenA;
-        rewardedTokenB = totalUnusedTokenB;
-        totalUnusedTokenA = 0;
-        totalUnusedTokenB = 0;
-    }
-
     /// @notice Stake rewards public function
     /// @dev Executes the restaking of the rewards. Adds a reentrant guard
     /// @param fromToken The list of token addresses from which the conversion is done
@@ -449,7 +418,6 @@ contract Grizzly is
         external
         override
         nonReentrant
-        emergency(false)
         returns (
             uint256 totalBnb,
             uint256 standardBnb,
@@ -457,7 +425,8 @@ contract Grizzly is
             uint256 stablecoinBnb
         )
     {
-        require(deadline > block.timestamp, "Deadline expired");
+        isNotPaused();
+        require(deadline > block.timestamp, "DE");
         DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
         return _stakeRewards();
     }
@@ -593,10 +562,10 @@ contract Grizzly is
             standardStrategyRewardHoney(honeyBuybackAmount + mintedHoney);
 
             // The remaining 6% is transferred to the devs
-            (bool transferSuccess, ) = payable(DevTeam).call{
-                value: bnbReward - tokenPairLpShare - honeyBuybackShare
-            }("");
-            require(transferSuccess, "Dev transfer failed");
+            _transferEth(
+                DevTeam,
+                bnbReward - tokenPairLpShare - honeyBuybackShare
+            );
         } else {
             // If Honey price is high, 24% is converted into Honey-BNB LP
             uint256 honeyBnbLpShare = (bnbReward * 24) / 100;
@@ -617,10 +586,10 @@ contract Grizzly is
             standardStrategyRewardHoney(mintedHoney);
 
             // The remaining 6% of BNB is transferred to the devs
-            (bool transferSuccess, ) = payable(DevTeam).call{
-                value: bnbReward - tokenPairLpShare - honeyBnbLpShare
-            }("");
-            require(transferSuccess, "Dev transfer failed");
+            _transferEth(
+                DevTeam,
+                bnbReward - tokenPairLpShare - honeyBnbLpShare
+            );
         }
     }
 
@@ -648,10 +617,7 @@ contract Grizzly is
             grizzlyStrategyStakeHoney(honeyBuybackAmount + mintedHoney);
 
             // The remaining 6% of BNB is transferred to the devs
-            (bool transferSuccess, ) = payable(DevTeam).call{
-                value: bnbReward - honeyBuybackShare
-            }("");
-            require(transferSuccess, "Dev transfer failed");
+            _transferEth(DevTeam, bnbReward - honeyBuybackShare);
         } else {
             // If Honey price is high, 70% of the BNB is used to buy Honey from the DEX
             uint256 honeyBuybackShare = (bnbReward * 70) / 100;
@@ -677,10 +643,10 @@ contract Grizzly is
             grizzlyStrategyStakeHoney(honeyBuybackAmount + mintedHoney);
 
             // The remaining 6% of BNB is transferred to the devs
-            (bool transferSuccess, ) = payable(DevTeam).call{
-                value: bnbReward - honeyBuybackShare - honeyBnbLpShare
-            }("");
-            require(transferSuccess, "Dev transfer failed");
+            _transferEth(
+                DevTeam,
+                bnbReward - honeyBuybackShare - honeyBnbLpShare
+            );
         }
     }
 
@@ -703,10 +669,7 @@ contract Grizzly is
         StakingContract.deposit(PoolID, pairLpAmount);
 
         // The remaining 3% of BNB is transferred to the devs
-        (bool transferSuccess, ) = payable(DevTeam).call{
-            value: bnbReward - pairLpShare
-        }("");
-        require(transferSuccess, "Dev transfer failed");
+        _transferEth(DevTeam, bnbReward - pairLpShare);
     }
 
     /// @notice Mints tokens according to the bee efficiency level
@@ -728,58 +691,24 @@ contract Grizzly is
     function updateBeeEfficiencyLevel(uint256 _newBeeEfficiencyLevel)
         external
         override
-        emergency(false)
         onlyRole(UPDATER_ROLE)
     {
         beeEfficiencyLevel = _newBeeEfficiencyLevel;
     }
 
-    /// @notice Used to recover funds sent to this contract by mistake
+    /// @notice Used to recover funds sent to this contract by mistake and claims unused tokens
     function recoverFunds(uint256 amount)
         external
         override
         nonReentrant
         onlyRole(FUNDS_RECOVERY_ROLE)
     {
-        require(amount <= address(this).balance, "Insufficient funds");
-        (bool transferSuccess, ) = payable(msg.sender).call{value: amount}("");
-        require(transferSuccess, "Transfer failed");
-    }
-
-    /// @notice Puts the contract into emergency state
-    /// @dev Can only be executed by the Emergency role. After that deposit/withdraw/stakeRewards does not work anymore. Only funds can be withdrawn with the withdrawEmergency() function
-    function setEmergencyState() external override onlyRole(EMERGENCY_ROLE) {
-        isEmergency = true;
-    }
-
-    /// @notice Withdraws in emergency state
-    /// @dev this function can only be executed in emergency state. There is no stake reward performed. Only deposited funds can be withdrawn
-    /// @return The amount withdrawn in BNB
-    function withdrawEmergency()
-        external
-        override
-        nonReentrant
-        emergency(true)
-        returns (uint256)
-    {
-        uint256 currentDeposits = 0;
-        if (userStrategy[msg.sender] == Strategy.STANDARD) {
-            currentDeposits = getStandardStrategyBalance();
-        } else if (userStrategy[msg.sender] == Strategy.GRIZZLY) {
-            currentDeposits = getGrizzlyStrategyBalance();
-        } else {
-            currentDeposits = getStablecoinStrategyBalance();
-        }
-
-        uint256 amountWithdrawn = 0;
-        if (currentDeposits > 0) {
-            amountWithdrawn = _withdraw(currentDeposits);
-            (bool transferSuccess, ) = payable(msg.sender).call{
-                value: amountWithdrawn
-            }("");
-            require(transferSuccess, "Transfer failed");
-        }
-        return amountWithdrawn;
+        require(amount <= address(this).balance, "IF");
+        TokenA.safeTransfer(msg.sender, totalUnusedTokenA);
+        TokenB.safeTransfer(msg.sender, totalUnusedTokenB);
+        totalUnusedTokenA = 0;
+        totalUnusedTokenB = 0;
+        _transferEth(msg.sender, amount);
     }
 
     /// @notice Used to get the most up-to-date state for caller's deposits. It is intended to be statically called
@@ -793,7 +722,6 @@ contract Grizzly is
     /// @return stakedHoney - The amount of Honey tokens staked in the Staking Pool
     function getUpdatedState()
         external
-        emergency(false)
         returns (
             Strategy currentStrategy,
             uint256 deposited,
@@ -804,6 +732,7 @@ contract Grizzly is
             uint256 stakedHoney
         )
     {
+        isNotPaused();
         _stakeRewards();
         currentStrategy = userStrategy[msg.sender];
         if (currentStrategy == Strategy.GRIZZLY) {
@@ -846,4 +775,13 @@ contract Grizzly is
             stakedHoney = 0;
         }
     }
+
+    /// @notice payout function
+    /// @dev care about non reentrant vulnerabilities
+    function _transferEth(address to, uint256 amount) internal {
+        (bool transferSuccess, ) = payable(to).call{value: amount}("");
+        require(transferSuccess, "TF");
+    }
+
+    uint256[50] private __gap;
 }

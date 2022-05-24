@@ -1,15 +1,16 @@
 //SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.4;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "../Config/BaseConfig.sol";
 
 /// @title Grizzly strategy handler
 /// @notice The contract keeps track of the liquidity pool balances, of the GHNY staking pool lp tokens and the GHNY staking pool honey rewards of a grizzly strategy investor using EIP-1973
 /// @dev This contract is abstract and is intended to be inherited by grizzly.sol. Honey and lp rewards are handled using round masks
-abstract contract GrizzlyStrategy is BaseConfig {
-    using SafeERC20 for IERC20;
+abstract contract GrizzlyStrategy is Initializable, BaseConfig {
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
     struct GrizzlyStrategyParticipant {
         uint256 amount;
@@ -17,15 +18,19 @@ abstract contract GrizzlyStrategy is BaseConfig {
         uint256 pendingHoney;
         uint256 lpMask;
         uint256 pendingLp;
+        uint256 pendingAdditionalHoney;
+        uint256 additionalHoneyMask;
     }
 
-    uint256 public grizzlyStrategyDeposits = 0;
+    uint256 public grizzlyStrategyDeposits;
 
-    uint256 public grizzlyStrategyLastHoneyBalance = 0;
-    uint256 public grizzlyStrategyLastLpBalance = 0;
+    uint256 public grizzlyStrategyLastHoneyBalance;
+    uint256 public grizzlyStrategyLastLpBalance;
+    uint256 public grizzlyStrategyLastAdditionalHoneyBalance;
 
-    uint256 private honeyRoundMask = 1;
-    uint256 private lpRoundMask = 1;
+    uint256 private honeyRoundMask;
+    uint256 private lpRoundMask;
+    uint256 private additionalHoneyRoundMask;
 
     event GrizzlyStrategyClaimHoneyEvent(
         address indexed user,
@@ -38,6 +43,12 @@ abstract contract GrizzlyStrategy is BaseConfig {
     );
 
     mapping(address => GrizzlyStrategyParticipant) private participantData;
+
+    function __GrizzlyStrategy_init() internal initializer {
+        honeyRoundMask = 1;
+        lpRoundMask = 1;
+        additionalHoneyRoundMask = 1;
+    }
 
     /// @notice Deposits the desired amount for a grizzly strategy investor
     /// @dev User masks are updated before the deposit to have a clean state
@@ -52,11 +63,8 @@ abstract contract GrizzlyStrategy is BaseConfig {
     /// @dev User masks are updated before the deposit to have a clean state
     /// @param amount The desired withdraw amount for an investor
     function grizzlyStrategyWithdraw(uint256 amount) internal {
-        require(amount > 0, "The amount of tokens must be greater than zero");
-        require(
-            amount <= getGrizzlyStrategyBalance(),
-            "Specified amount greater than current deposit"
-        );
+        require(amount > 0, "TZ");
+        require(amount <= getGrizzlyStrategyBalance(), "SD");
 
         updateUserMask();
         participantData[msg.sender].amount -= amount;
@@ -72,12 +80,22 @@ abstract contract GrizzlyStrategy is BaseConfig {
     /// @notice Updates the round mask for the honey and lp rewards
     /// @dev The honey and lp rewards are requested from the GHNY staking pool for the whole contract
     function updateRoundMasks() public {
+        isNotPaused();
         if (grizzlyStrategyDeposits == 0) return;
 
         // In order to keep track of how many new tokens were rewarded to this contract, we need to take
         // into account claimed tokens as well, otherwise the balance will become lower than "last balance"
-        (, , , , uint256 claimedHoney, uint256 claimedLp, ) = StakingPool
-            .stakerAmounts(address(this));
+        (
+            ,
+            ,
+            ,
+            ,
+            uint256 claimedHoney,
+            uint256 claimedLp,
+            ,
+            ,
+            uint256 claimedAdditionalHoney
+        ) = StakingPool.stakerAmounts(address(this));
 
         uint256 newHoneyTokens = claimedHoney +
             StakingPool.balanceOf(address(this)) -
@@ -85,14 +103,21 @@ abstract contract GrizzlyStrategy is BaseConfig {
         uint256 newLpTokens = claimedLp +
             StakingPool.lpBalanceOf(address(this)) -
             grizzlyStrategyLastLpBalance;
+        uint256 newAdditionalHoneyTokens = claimedAdditionalHoney +
+            StakingPool.getPendingHoneyRewards() -
+            grizzlyStrategyLastAdditionalHoneyBalance;
 
         grizzlyStrategyLastHoneyBalance += newHoneyTokens;
         grizzlyStrategyLastLpBalance += newLpTokens;
+        grizzlyStrategyLastAdditionalHoneyBalance += newAdditionalHoneyTokens;
 
         honeyRoundMask +=
             (DECIMAL_OFFSET * newHoneyTokens) /
             grizzlyStrategyDeposits;
         lpRoundMask += (DECIMAL_OFFSET * newLpTokens) / grizzlyStrategyDeposits;
+        additionalHoneyRoundMask +=
+            (DECIMAL_OFFSET * newAdditionalHoneyTokens) /
+            grizzlyStrategyDeposits;
     }
 
     /// @notice Updates the user round mask for the honey and lp rewards
@@ -112,6 +137,15 @@ abstract contract GrizzlyStrategy is BaseConfig {
             DECIMAL_OFFSET;
 
         participantData[msg.sender].lpMask = lpRoundMask;
+
+        participantData[msg.sender].pendingAdditionalHoney +=
+            ((additionalHoneyRoundMask -
+                participantData[msg.sender].additionalHoneyMask) *
+                participantData[msg.sender].amount) /
+            DECIMAL_OFFSET;
+
+        participantData[msg.sender]
+            .additionalHoneyMask = additionalHoneyRoundMask;
     }
 
     /// @notice Claims the staked honey for an investor. The investors honnies are first unstaked from the GHNY staking pool and then transfered to the investor.
@@ -119,6 +153,7 @@ abstract contract GrizzlyStrategy is BaseConfig {
     /// @dev Can be called static to get the current investors pending Honey
     /// @return the pending Honey
     function grizzlyStrategyClaimHoney() public returns (uint256) {
+        isNotPaused();
         updateRoundMasks();
         uint256 pendingHoney = participantData[msg.sender].pendingHoney +
             ((honeyRoundMask - participantData[msg.sender].honeyMask) *
@@ -131,7 +166,10 @@ abstract contract GrizzlyStrategy is BaseConfig {
             participantData[msg.sender].pendingHoney = 0;
             StakingPool.unstake(pendingHoney);
 
-            IERC20(address(HoneyToken)).safeTransfer(msg.sender, pendingHoney);
+            IERC20Upgradeable(address(HoneyToken)).safeTransfer(
+                msg.sender,
+                pendingHoney
+            );
         }
         emit GrizzlyStrategyClaimHoneyEvent(msg.sender, pendingHoney);
         return pendingHoney;
@@ -146,6 +184,7 @@ abstract contract GrizzlyStrategy is BaseConfig {
         public
         returns (uint256 claimedHoney, uint256 claimedBnb)
     {
+        isNotPaused();
         updateRoundMasks();
         uint256 pendingLp = participantData[msg.sender].pendingLp +
             ((lpRoundMask - participantData[msg.sender].lpMask) *
@@ -154,12 +193,24 @@ abstract contract GrizzlyStrategy is BaseConfig {
 
         participantData[msg.sender].lpMask = lpRoundMask;
 
+        uint256 pendingAdditionalHoney = participantData[msg.sender]
+            .pendingAdditionalHoney +
+            ((additionalHoneyRoundMask -
+                participantData[msg.sender].additionalHoneyMask) *
+                participantData[msg.sender].amount) /
+            DECIMAL_OFFSET;
+
+        participantData[msg.sender]
+            .additionalHoneyMask = additionalHoneyRoundMask;
+
         uint256 _claimedHoney = 0;
         uint256 _claimedBnb = 0;
-        if (pendingLp > 0) {
+        if (pendingLp > 0 || pendingAdditionalHoney > 0) {
             participantData[msg.sender].pendingLp = 0;
+            participantData[msg.sender].pendingAdditionalHoney = 0;
             (_claimedHoney, _claimedBnb) = StakingPool.claimLpTokens(
                 pendingLp,
+                pendingAdditionalHoney,
                 msg.sender
             );
         }
@@ -186,7 +237,7 @@ abstract contract GrizzlyStrategy is BaseConfig {
             grizzlyStrategyDeposits == 0
         ) return 0;
 
-        (, , , , uint256 claimedHoney, , ) = StakingPool.stakerAmounts(
+        (, , , , uint256 claimedHoney, , , , ) = StakingPool.stakerAmounts(
             address(this)
         );
 
@@ -213,7 +264,7 @@ abstract contract GrizzlyStrategy is BaseConfig {
             grizzlyStrategyDeposits == 0
         ) return 0;
 
-        (, , , , , uint256 claimedLp, ) = StakingPool.stakerAmounts(
+        (, , , , , uint256 claimedLp, , , ) = StakingPool.stakerAmounts(
             address(this)
         );
 
@@ -241,4 +292,6 @@ abstract contract GrizzlyStrategy is BaseConfig {
     {
         return participantData[participant];
     }
+
+    uint256[50] private __gap;
 }

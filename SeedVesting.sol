@@ -2,13 +2,16 @@
 pragma solidity ^0.8.4;
 
 import "./Interfaces/IHoney.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
-contract SeedVesting is AccessControl {
-    using SafeERC20 for IERC20;
+contract SeedVesting is Initializable, AccessControlUpgradeable, PausableUpgradeable {
+    using SafeERC20Upgradeable for IERC20Upgradeable;
     bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     struct InvestorData {
         uint256 totalAmount;
@@ -25,12 +28,15 @@ contract SeedVesting is AccessControl {
     event InvestorAmountSet(address indexed _investor, uint256 amount);
     event ClaimedTokens(address indexed _investor, uint256 amount);
 
-    constructor(
+    function initialize(
         address _admin,
         address _honeyTokenAddress,
         uint256 _startBlock,
         uint256 _endBlock
-    ) {
+    )
+        public
+        initializer
+    {
         require(
             _startBlock < _endBlock,
             "Start block must be lower than end block"
@@ -39,6 +45,19 @@ contract SeedVesting is AccessControl {
         HoneyToken = IHoney(_honeyTokenAddress);
         startBlock = _startBlock;
         endBlock = _endBlock;
+        __Pausable_init();
+    }
+
+    /// @notice pause
+    /// @dev pause the contract
+    function pause() external whenNotPaused onlyRole(PAUSER_ROLE){
+      _pause();
+    }
+
+    /// @notice unpause
+    /// @dev unpause the contract
+    function unpause() external whenPaused onlyRole(PAUSER_ROLE){
+      _unpause();
     }
 
     function getClaimableAmount() public view returns (uint256) {
@@ -58,7 +77,7 @@ contract SeedVesting is AccessControl {
                 : 0;
     }
 
-    function claimTokens() public {
+    function claimTokens() public whenNotPaused {
         require(startBlock < block.number, "Vesting period not started yet");
         require(
             investorData[msg.sender].totalAmount > 0,
@@ -70,7 +89,7 @@ contract SeedVesting is AccessControl {
 
         investorData[msg.sender].claimed += claimableAmount;
         HoneyToken.claimTokensWithoutAdditionalTokens(claimableAmount);
-        IERC20(address(HoneyToken)).safeTransfer(msg.sender, claimableAmount);
+        IERC20Upgradeable(address(HoneyToken)).safeTransfer(msg.sender, claimableAmount);
         emit ClaimedTokens(msg.sender, claimableAmount);
     }
 
@@ -117,4 +136,6 @@ contract SeedVesting is AccessControl {
         );
         endBlock = _endBlock;
     }
+
+    uint256[50] private __gap;
 }
