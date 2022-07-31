@@ -24,9 +24,16 @@ interface IReferral {
     function withdrawReferralRewards(uint256 _amount, address _poolAddress)
         external;
 
-    function withdrawAllReferralRewards(address _poolAddress)
+    function withdrawAllReferralRewards(address[] memory _poolAddress)
         external
         returns (uint256);
 
     function referralUpdateRewards(uint256 _rewardedAmount) external;
+
+    function getExpericencePoints(address _from)
+        external
+        view
+        returns (uint256 points);
+
+    function getLevel(address _from) external view returns (uint256 level);
 }

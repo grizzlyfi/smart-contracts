@@ -22,6 +22,7 @@ contract StakingPool is
 {
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
+    bytes32 public constant REWARDER_ROLE = keccak256("REWARDER_ROLE");
     bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     uint256 public constant DECIMAL_OFFSET = 10e12;
@@ -148,6 +149,14 @@ contract StakingPool is
         uint256 currentBalance = balanceOf(msg.sender);
         require(currentBalance >= amount, "Requested amount too large");
 
+        uint256 additionalHoneyAmount = getPendingHoneyRewards();
+
+        claimLpTokens(
+            stakerAmounts[msg.sender].pendingLp,
+            additionalHoneyAmount,
+            msg.sender
+        );
+
         totalStaked =
             totalStaked +
             currentBalance -
@@ -183,7 +192,12 @@ contract StakingPool is
     /// @notice Rewards the staking pool with honey
     /// @dev The round mask is increased according to the reward
     /// @param amount The amount to be rewarded
-    function rewardHoney(uint256 amount) external override whenNotPaused {
+    function rewardHoney(uint256 amount)
+        external
+        override
+        whenNotPaused
+        onlyRole(REWARDER_ROLE)
+    {
         require(totalStaked > 0, "totalStaked amount is 0");
         IERC20Upgradeable(address(StakedToken)).safeTransferFrom(
             msg.sender,
@@ -344,7 +358,7 @@ contract StakingPool is
         uint256 additionalHoneyAmount,
         address to
     )
-        external
+        public
         override
         whenNotPaused
         returns (uint256 stakedTokenOut, uint256 bnbOut)
@@ -404,7 +418,12 @@ contract StakingPool is
     /// @notice Rewards lp to the conract
     /// @dev The round mask is increased according to the reward
     /// @param amount The amount in lp to be rewarded
-    function rewardLP(uint256 amount) external override whenNotPaused {
+    function rewardLP(uint256 amount)
+        external
+        override
+        whenNotPaused
+        onlyRole(REWARDER_ROLE)
+    {
         if (totalStaked == 0) return;
 
         IERC20Upgradeable(address(LPToken)).safeTransferFrom(

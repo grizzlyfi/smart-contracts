@@ -2,6 +2,8 @@
 pragma solidity ^0.8.4;
 
 import "./Interfaces/IReferral.sol";
+import "./Interfaces/IHoney.sol";
+import "./Interfaces/IFreezer.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
@@ -27,9 +29,9 @@ contract Referral is
     }
 
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-
-    // the role that allows updating parameters
     bytes32 public constant REWARDER_ROLE = keccak256("REWARDER_ROLE");
+    bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
+
     uint256 public constant DECIMAL_OFFSET = 10e12;
 
     // (poolAddress) -> (referralGiverAddress) -> (ReferralGiver)
@@ -50,16 +52,20 @@ contract Referral is
     // (poolAddress) -> (roundMask)
     mapping(address => uint256) private roundMasks;
 
-    IERC20Upgradeable private HoneyToken;
+    IHoney private HoneyToken;
     address private DevTeam;
+
+    IFreezer public Freezer;
 
     function initialize(
         address _honeyTokenAddress,
         address _admin,
-        address _devTeam
+        address _devTeam,
+        address _freezerAddress
     ) public initializer {
-        HoneyToken = IERC20Upgradeable(_honeyTokenAddress);
+        HoneyToken = IHoney(_honeyTokenAddress);
         DevTeam = _devTeam;
+        Freezer = IFreezer(_freezerAddress);
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         __Pausable_init();
     }
@@ -180,15 +186,25 @@ contract Referral is
             msg.sender
         );
 
-        require(_amount <= _currentReferralReward, "Withdraw amount too large");
+        uint256 _rewardMultiplier = getReferralMultiplier(msg.sender);
+
+        require(
+            _amount <= _currentReferralReward * _rewardMultiplier,
+            "Withdraw amount too large"
+        );
 
         referralGivers[_poolAddress][msg.sender].reward =
             _currentReferralReward -
-            _amount;
+            _amount /
+            _rewardMultiplier;
         referralGivers[_poolAddress][msg.sender].rewardMask = roundMasks[
             _poolAddress
         ];
         referralGivers[_poolAddress][msg.sender].claimedRewards += _amount;
+
+        if (_amount - _amount / _rewardMultiplier > 0) {
+            HoneyToken.claimTokens(_amount - _amount / _rewardMultiplier);
+        }
 
         IERC20Upgradeable(address(HoneyToken)).safeTransfer(
             msg.sender,
@@ -197,20 +213,24 @@ contract Referral is
     }
 
     /// @notice Withdraws all the referral rewards for a referral giver
-    /// @param _poolAddress The address of the pool for which the rewards should be withdrawn
+    /// @param _poolAddresses The addresses of the pool for which the rewards should be withdrawn
     /// @return Returns the value that was withdrawn
-    function withdrawAllReferralRewards(address _poolAddress)
+    function withdrawAllReferralRewards(address[] memory _poolAddresses)
         external
         override
         whenNotPaused
         returns (uint256)
     {
-        uint256 _amountToWithdraw = getReferralRewards(
-            _poolAddress,
-            msg.sender
-        );
-        withdrawReferralRewards(_amountToWithdraw, _poolAddress);
-        return _amountToWithdraw;
+        uint256 _totalWithdrawls = 0;
+        for (uint256 i = 0; i < _poolAddresses.length; i++) {
+            uint256 _amountToWithdraw = getReferralRewards(
+                _poolAddresses[i],
+                msg.sender
+            ) * getReferralMultiplier(msg.sender);
+            withdrawReferralRewards(_amountToWithdraw, _poolAddresses[i]);
+            _totalWithdrawls += _amountToWithdraw;
+        }
+        return _totalWithdrawls;
     }
 
     /// @notice Rewards the referral contract
@@ -247,7 +267,7 @@ contract Referral is
         uint256 currentReferralRewards = getReferralRewards(
             _poolAddress,
             _referralGiver
-        );
+        ) * getReferralMultiplier(_referralGiver);
         uint256 claimedReferralRewards = referralGivers[_poolAddress][
             _referralGiver
         ].claimedRewards;
@@ -272,5 +292,55 @@ contract Referral is
         ];
     }
 
-    uint256[50] private __gap;
+    /// @notice referral multiplier
+    /// @dev can be upgraded to include logic to add multipliers
+    function getReferralMultiplier(address _referralGiver)
+        internal
+        view
+        returns (uint256)
+    {
+        if (address(Freezer) != address(0)) {
+            return getLevel(_referralGiver);
+        } else {
+            return 1;
+        }
+    }
+
+    function getExpericencePoints(address _from)
+        public
+        view
+        override
+        returns (uint256 points)
+    {
+        return Freezer.freezerPoints(_from);
+    }
+
+    function getLevel(address _from)
+        public
+        view
+        override
+        returns (uint256 level)
+    {
+        uint256 experiencePoints = getExpericencePoints(_from);
+        level = 1;
+        if (experiencePoints >= 60000 ether) {
+            level = 5;
+        } else if (experiencePoints >= 24000 ether) {
+            level = 4;
+        } else if (experiencePoints >= 12000 ether) {
+            level = 3;
+        } else if (experiencePoints >= 3000 ether) {
+            level = 2;
+        }
+    }
+
+    /// @notice sets the experiencepoints address
+    function setFreezer(address _freezerAddress)
+        external
+        onlyRole(UPDATER_ROLE)
+    {
+        Freezer = IFreezer(_freezerAddress);
+    }
+
+    uint256[49] private __gap;
 }

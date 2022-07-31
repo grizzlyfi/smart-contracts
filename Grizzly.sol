@@ -77,6 +77,7 @@ contract Grizzly is
     uint256 public lastStakeRewardsDuration;
     uint256 public lastStakeRewardsDeposit;
     uint256 public lastStakeRewardsCake;
+    uint256 public restakeThreshold;
 
     event DepositEvent(
         address indexed user,
@@ -456,12 +457,12 @@ contract Grizzly is
         uint256 afterAmount = RewardToken.balanceOf(address(this));
         uint256 currentRewards = afterAmount - beforeAmount;
 
-        if (currentRewards == 0) return (0, 0, 0, 0);
+        if (currentRewards < restakeThreshold) return (0, 0, 0, 0);
 
         // Store rewards for APY calculation
         lastStakeRewardsDuration = block.timestamp - lastStakeRewardsCall;
         lastStakeRewardsCall = block.timestamp;
-        (lastStakeRewardsDeposit, ) = StakingContract.userInfo(
+        (lastStakeRewardsDeposit,, ) = StakingContract.userInfo(
             PoolID,
             address(this)
         );
@@ -494,7 +495,7 @@ contract Grizzly is
         if (grizzlyShare > 100) stakeGrizzlyRewards(grizzlyShare);
         if (stablecoinShare > 100) stakeStablecoinRewards(stablecoinShare);
 
-        if (bnbAmount > 100 && totalDeposits != 0) {
+        /*if (bnbAmount > 100 && totalDeposits != 0) {
             // Get the price of Honey relative to BNB
             uint256 ghnyBnbPrice = AveragePriceOracle
                 .getAverageHoneyForOneEth();
@@ -508,7 +509,7 @@ contract Grizzly is
             uint256 mintedHoney = mintTokens(referralReward, ghnyBnbPrice);
             // referral contract is rewarded with the minted honey
             Referral.referralUpdateRewards(mintedHoney);
-        }
+        }*/
 
         emit StakeRewardsEvent(
             msg.sender,
@@ -523,8 +524,8 @@ contract Grizzly is
     /// @notice Stakes the rewards for the standard strategy
     /// @param bnbReward The pending bnb reward to be restaked
     function stakeStandardRewards(uint256 bnbReward) internal {
-        // 70% of the BNB is converted into TokenA-TokenB LP tokens
-        uint256 tokenPairLpShare = (bnbReward * 70) / 100;
+        // 50% of the BNB is converted into TokenA-TokenB LP tokens
+        uint256 tokenPairLpShare = (bnbReward * 50) / 100;
         (
             uint256 tokenPairLpAmount,
             uint256 unusedTokenA,
@@ -546,29 +547,31 @@ contract Grizzly is
 
         // If Honey price too low, use buyback strategy
         if (ghnyBnbPrice > beeEfficiencyLevel) {
-            // 24% of the BNB is used to buy Honey from the DEX
-            uint256 honeyBuybackShare = (bnbReward * 24) / 100;
+            // 40% of the BNB is used to buy Honey from the DEX
+            uint256 honeyBuybackShare = (bnbReward * 40) / 100;
             uint256 honeyBuybackAmount = DEX.convertEthToToken{
                 value: honeyBuybackShare
             }(address(HoneyToken));
 
-            // 6% of the equivalent amount of Honey (based on Honey-BNB price) is minted
-            uint256 mintedHoney = mintTokens(
-                (bnbReward * 6) / 100,
-                beeEfficiencyLevel
+            // 10% of the equivalent amount of Honey (based on Honey-BNB price) is minted
+            (uint256 mintedHoney, uint256 referralHoney) = mintTokens(
+                (bnbReward * 10) / 100,
+                beeEfficiencyLevel,
+                (1 ether) / 100
             );
 
             // The purchased and minted Honey is rewarded to the Standard strategy participants
             standardStrategyRewardHoney(honeyBuybackAmount + mintedHoney);
+            Referral.referralUpdateRewards(referralHoney);
 
-            // The remaining 6% is transferred to the devs
+            // The remaining 10% is transferred to the devs
             _transferEth(
                 DevTeam,
                 bnbReward - tokenPairLpShare - honeyBuybackShare
             );
         } else {
-            // If Honey price is high, 24% is converted into Honey-BNB LP
-            uint256 honeyBnbLpShare = (bnbReward * 24) / 100;
+            // If Honey price is high, 40% is converted into Honey-BNB LP
+            uint256 honeyBnbLpShare = (bnbReward * 40) / 100;
             (uint256 honeyBnbLpAmount, , ) = DEX.convertEthToTokenLP{
                 value: honeyBnbLpShare
             }(address(HoneyToken));
@@ -576,16 +579,18 @@ contract Grizzly is
             // That Honey-BNB LP is sent as reward to the Staking Pool
             StakingPool.rewardLP(honeyBnbLpAmount);
 
-            // 30% of the equivalent amount of Honey (based on Honey-BNB price) is minted
-            uint256 mintedHoney = mintTokens(
-                (bnbReward * 30) / 100,
-                beeEfficiencyLevel
+            // 50% of the equivalent amount of Honey (based on Honey-BNB price) is minted
+            (uint256 mintedHoney, uint256 referralHoney) = mintTokens(
+                (bnbReward * 50) / 100,
+                beeEfficiencyLevel,
+                (1 ether) / 100
             );
 
             // The minted Honey is rewarded to the Standard strategy participants
             standardStrategyRewardHoney(mintedHoney);
+            Referral.referralUpdateRewards(referralHoney);
 
-            // The remaining 6% of BNB is transferred to the devs
+            // The remaining 10% of BNB is transferred to the devs
             _transferEth(
                 DevTeam,
                 bnbReward - tokenPairLpShare - honeyBnbLpShare
@@ -601,46 +606,50 @@ contract Grizzly is
 
         // If Honey price too low, use buyback strategy
         if (ghnyBnbPrice > beeEfficiencyLevel) {
-            // 94% (70% + 24%) of the BNB is used to buy Honey from the DEX
-            uint256 honeyBuybackShare = (bnbReward * (70 + 24)) / 100;
+            // 90% (50% + 40%) of the BNB is used to buy Honey from the DEX
+            uint256 honeyBuybackShare = (bnbReward * (50 + 40)) / 100;
             uint256 honeyBuybackAmount = DEX.convertEthToToken{
                 value: honeyBuybackShare
             }(address(HoneyToken));
 
-            // 6% of the equivalent amount of Honey (based on Honey-BNB price) is minted
-            uint256 mintedHoney = mintTokens(
-                (bnbReward * 6) / 100,
-                beeEfficiencyLevel
+            // 10% of the equivalent amount of Honey (based on Honey-BNB price) is minted
+            (uint256 mintedHoney, uint256 referralHoney) = mintTokens(
+                (bnbReward * 10) / 100,
+                beeEfficiencyLevel,
+                (1 ether) / 100
             );
 
             // The purchased and minted Honey is staked
             grizzlyStrategyStakeHoney(honeyBuybackAmount + mintedHoney);
+            Referral.referralUpdateRewards(referralHoney);
 
             // The remaining 6% of BNB is transferred to the devs
             _transferEth(DevTeam, bnbReward - honeyBuybackShare);
         } else {
-            // If Honey price is high, 70% of the BNB is used to buy Honey from the DEX
-            uint256 honeyBuybackShare = (bnbReward * 70) / 100;
+            // If Honey price is high, 50% of the BNB is used to buy Honey from the DEX
+            uint256 honeyBuybackShare = (bnbReward * 50) / 100;
             uint256 honeyBuybackAmount = DEX.convertEthToToken{
                 value: honeyBuybackShare
             }(address(HoneyToken));
 
-            // 24% of the BNB is converted into Honey-BNB LP
-            uint256 honeyBnbLpShare = (bnbReward * 24) / 100;
+            // 40% of the BNB is converted into Honey-BNB LP
+            uint256 honeyBnbLpShare = (bnbReward * 40) / 100;
             (uint256 honeyBnbLpAmount, , ) = DEX.convertEthToTokenLP{
                 value: honeyBnbLpShare
             }(address(HoneyToken));
             // The Honey-BNB LP is provided as reward to the Staking Pool
             StakingPool.rewardLP(honeyBnbLpAmount);
 
-            // 30% of the equivalent amount of Honey (based on Honey-BNB price) is minted
-            uint256 mintedHoney = mintTokens(
-                (bnbReward * 30) / 100,
-                beeEfficiencyLevel
+            // 50% of the equivalent amount of Honey (based on Honey-BNB price) is minted
+            (uint256 mintedHoney, uint256 referralHoney) = mintTokens(
+                (bnbReward * 50) / 100,
+                beeEfficiencyLevel,
+                (1 ether) / 100
             );
 
             // The purchased and minted Honey is staked
             grizzlyStrategyStakeHoney(honeyBuybackAmount + mintedHoney);
+            Referral.referralUpdateRewards(referralHoney);
 
             // The remaining 6% of BNB is transferred to the devs
             _transferEth(
@@ -653,8 +662,8 @@ contract Grizzly is
     /// @notice Stakes the rewards for the stablecoin strategy
     /// @param bnbReward The pending bnb reward to be restaked
     function stakeStablecoinRewards(uint256 bnbReward) internal {
-        // 97% of the BNB is converted into TokenA-TokenB LP tokens
-        uint256 pairLpShare = (bnbReward * 97) / 100;
+        // 94% of the BNB is converted into TokenA-TokenB LP tokens
+        uint256 pairLpShare = (bnbReward * 94) / 100;
         (uint256 pairLpAmount, uint256 unusedTokenA, uint256 unusedTokenB) = DEX
             .convertEthToPairLP{value: pairLpShare}(address(LPToken));
 
@@ -668,21 +677,25 @@ contract Grizzly is
         // The TokenA-TokenB LP tokens are staked in the MasterChef
         StakingContract.deposit(PoolID, pairLpAmount);
 
-        // The remaining 3% of BNB is transferred to the devs
+        // The remaining 6% of BNB is transferred to the devs
         _transferEth(DevTeam, bnbReward - pairLpShare);
     }
 
     /// @notice Mints tokens according to the bee efficiency level
     /// @param _share The share that should be minted in honey
     /// @param _beeEfficiencyLevel The bee efficiency level to be uset to convert bnb shares into honey amounts
+    /// @param _additionalShare The additional share tokens to be minted
     /// @return tokens The amount minted in honey tokens
-    function mintTokens(uint256 _share, uint256 _beeEfficiencyLevel)
-        internal
-        returns (uint256 tokens)
-    {
+    /// @return additionalTokens The additional tokens that were minted
+    function mintTokens(
+        uint256 _share,
+        uint256 _beeEfficiencyLevel,
+        uint256 _additionalShare
+    ) internal returns (uint256 tokens, uint256 additionalTokens) {
         tokens = (_share * _beeEfficiencyLevel) / (1 ether);
+        additionalTokens = (tokens * _additionalShare) / (1 ether);
 
-        HoneyToken.claimTokens(tokens);
+        HoneyToken.claimTokens(tokens + additionalTokens);
     }
 
     /// @notice Updates the bee efficiency level
@@ -694,6 +707,17 @@ contract Grizzly is
         onlyRole(UPDATER_ROLE)
     {
         beeEfficiencyLevel = _newBeeEfficiencyLevel;
+    }
+
+    /// @notice Updates the restake threshold. If the CAKE rewards are bleow this value, stakeRewards() is ignored
+    /// @dev only updater role can perform this function
+    /// @param _restakeThreshold The new restake threshold value
+    function updateRestakeThreshold(uint256 _restakeThreshold)
+        external
+        override
+        onlyRole(UPDATER_ROLE)
+    {
+        restakeThreshold = _restakeThreshold;
     }
 
     /// @notice Used to recover funds sent to this contract by mistake and claims unused tokens
@@ -783,5 +807,5 @@ contract Grizzly is
         require(transferSuccess, "TF");
     }
 
-    uint256[50] private __gap;
+    uint256[49] private __gap;
 }

@@ -16,29 +16,24 @@ contract MockMasterChef {
         lpTokenAddress = _lpTokenAddress;
     }
 
-    function cake() external view returns (address) {
+    function CAKE() external view returns (address) {
         return cakeTokenAddress;
     }
 
-    function poolInfo(uint256 _pid)
+    function lpToken(uint256 _pid)
         external
         view
-        returns (
-            address,
-            uint256,
-            uint256,
-            uint256
-        )
+        returns (address)
     {
-        return (lpTokenAddress, 1, 1, 1);
+        return lpTokenAddress;
     }
 
     function userInfo(uint256 _pid, address _user)
         external
         view
-        returns (uint256, uint256)
+        returns (uint256, uint256, uint256)
     {
-        return (deposits[_pid], deposits[_pid]);
+        return (deposits[_pid], deposits[_pid], 0);
     }
 
     function pendingCake(uint256 _pid, address _user)

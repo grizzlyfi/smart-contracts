@@ -72,7 +72,7 @@ abstract contract BaseConfig is
         DevTeam = _DevTeamAddress;
         PoolID = _PoolID;
 
-        (address lpToken, , , ) = StakingContract.poolInfo(PoolID);
+        address lpToken = StakingContract.lpToken(PoolID);
 
         LPToken = IUniswapV2Pair(lpToken);
 
@@ -80,7 +80,7 @@ abstract contract BaseConfig is
 
         TokenB = IERC20Upgradeable(LPToken.token1());
 
-        RewardToken = IERC20Upgradeable(StakingContract.cake());
+        RewardToken = IERC20Upgradeable(StakingContract.CAKE());
 
         IERC20Upgradeable(address(LPToken)).safeApprove(
             address(StakingContract),

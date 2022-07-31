@@ -462,7 +462,7 @@ contract DEX is
 
         return
             SwapRouter.getAmountsOut(1e18, _pathFromEthToToken)[
-                _pathFromEthToToken.length
+                _pathFromEthToToken.length - 1
             ];
     }
 
@@ -474,7 +474,7 @@ contract DEX is
         override
         returns (uint256)
     {
-        (address lpToken, , , ) = StakingContract.poolInfo(poolID);
+        address lpToken = StakingContract.lpToken(poolID);
 
         IUniswapV2Pair LPToken = IUniswapV2Pair(lpToken);
 
@@ -489,7 +489,7 @@ contract DEX is
         );
 
         IERC20Upgradeable RewardToken = IERC20Upgradeable(
-            StakingContract.cake()
+            StakingContract.CAKE()
         );
 
         uint256 pendingRewardToken = StakingContract.pendingCake(
@@ -555,7 +555,7 @@ contract DEX is
         override
         returns (uint256)
     {
-        (uint256 amount, ) = StakingContract.userInfo(poolID, msg.sender);
+        (uint256 amount,,) = StakingContract.userInfo(poolID, msg.sender);
         return amount;
     }
 
@@ -653,6 +653,26 @@ contract DEX is
         for (uint256 i = 0; i < tokens.length; i++) {
             setSwapPathForToken(tokens[i], pathsFromEth[i], pathsToEth[i]);
         }
+    }
+
+    /// @notice Returns full path array from ETH to Token
+    /// @param token The token addresses for which the path is to be returned
+    function getPathArrayEthToToken(address token)
+        external
+        view
+        returns (address[] memory)
+    {
+        return pathFromEthToToken[token];
+    }
+
+    /// @notice Returns full path array from Token to ETH
+    /// @param token The token addresses for which the path is to be returned
+    function getPathArrayTokenToEth(address token)
+        external
+        view
+        returns (address[] memory)
+    {
+        return pathFromTokenToEth[token];
     }
 
     uint256[50] private __gap;

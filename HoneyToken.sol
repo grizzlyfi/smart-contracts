@@ -52,6 +52,18 @@ contract HoneyToken is
         address _marketingReservesPool,
         address _devTeam
     ) public initializer {
+        require(admin != address(0), "Admin address cannot be null");
+        require(
+            _developmentFounders != address(0),
+            "Founders address cannot be null"
+        );
+        require(_advisors != address(0), "Advisors address cannot be null");
+        require(
+            _marketingReservesPool != address(0),
+            "Marketing address cannot be null"
+        );
+        require(_devTeam != address(0), "Dev team address cannot be null");
+
         __ERC20_init(tokenName, tokenSymbol);
         __ERC20Permit_init(tokenName);
         __Pausable_init();

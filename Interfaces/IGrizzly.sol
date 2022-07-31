@@ -88,5 +88,7 @@ interface IGrizzly {
 
     function updateBeeEfficiencyLevel(uint256 _beeEfficiencyThreshold) external;
 
+    function updateRestakeThreshold(uint256 _restakeThreshold) external;
+
     function recoverFunds(uint256 amount) external;
 }

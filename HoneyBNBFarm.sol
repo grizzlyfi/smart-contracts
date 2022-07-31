@@ -45,7 +45,10 @@ contract HoneyBNBFarm is
     uint256 public totalDeposits;
     uint256 private roundMask;
     uint256 private lastRoundMaskUpdateBlock;
-    uint256 public blockReward;
+    uint256 private blockRewardPhase1End;
+    uint256 private blockRewardPhase2Start;
+    uint256 private blockRewardPhase1Amount;
+    uint256 private blockRewardPhase2Amount;
 
     mapping(address => ParticipantData) public participantData;
 
@@ -57,14 +60,12 @@ contract HoneyBNBFarm is
         address _honeyTokenAddress,
         address _lpTokenAddress,
         address _dexAddress,
-        uint256 _blockReward,
         address _admin
     ) public initializer {
         roundMask = 1;
         HoneyToken = IHoney(_honeyTokenAddress);
         LPToken = IERC20Upgradeable(_lpTokenAddress);
         DEX = IDEX(_dexAddress);
-        blockReward = _blockReward;
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         __Pausable_init();
     }
@@ -282,6 +283,68 @@ contract HoneyBNBFarm is
         emit Unstake(msg.sender, amount);
     }
 
+    /// @notice Returns the rewards generated in a specific block range
+    /// @param fromBlock The starting block (exclusive)
+    /// @param toBlock The ending block (inclusive)
+    function getHoneyMintRewardsInRange(uint256 fromBlock, uint256 toBlock)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 phase1Rewards = 0;
+        uint256 linearPhaseRewards = 0;
+        uint256 phase2Rewards = 0;
+
+        if (blockRewardPhase1End > fromBlock) {
+            uint256 phaseEndBlock = toBlock < blockRewardPhase1End
+                ? toBlock
+                : blockRewardPhase1End;
+            phase1Rewards =
+                (phaseEndBlock - fromBlock) *
+                blockRewardPhase1Amount;
+        }
+
+        if (
+            fromBlock < blockRewardPhase2Start && blockRewardPhase1End < toBlock
+        ) {
+            uint256 phaseStartBlock = fromBlock < blockRewardPhase1End
+                ? blockRewardPhase1End
+                : fromBlock;
+            uint256 phaseEndBlock = toBlock < blockRewardPhase2Start
+                ? toBlock
+                : blockRewardPhase2Start;
+
+            uint256 linearPhaseRewardDifference = blockRewardPhase1Amount -
+                blockRewardPhase2Amount;
+            uint256 linearPhaseBlockLength = blockRewardPhase2Start -
+                blockRewardPhase1End;
+            uint256 phaseStartBlockReward = blockRewardPhase1Amount -
+                ((phaseStartBlock - blockRewardPhase1End) *
+                    linearPhaseRewardDifference) /
+                linearPhaseBlockLength;
+            uint256 phaseEndBlockReward = blockRewardPhase1Amount -
+                ((phaseEndBlock - blockRewardPhase1End) *
+                    linearPhaseRewardDifference) /
+                linearPhaseBlockLength;
+
+            linearPhaseRewards =
+                ((phaseEndBlock - phaseStartBlock) *
+                    (phaseStartBlockReward + phaseEndBlockReward)) /
+                2;
+        }
+
+        if (blockRewardPhase2Start < toBlock) {
+            uint256 phaseStartBlock = fromBlock < blockRewardPhase2Start
+                ? blockRewardPhase2Start
+                : fromBlock;
+            phase2Rewards =
+                (toBlock - phaseStartBlock) *
+                blockRewardPhase2Amount;
+        }
+
+        return phase1Rewards + linearPhaseRewards + phase2Rewards;
+    }
+
     /// @notice Returns the pending rewards for an investor
     /// @dev Caluclates the pending rewards by using the differrence of the currentRoundMask of the pool and the investors rewardMask and the share of the total staked amount.
     /// @return The pending reward for the investor
@@ -290,9 +353,11 @@ contract HoneyBNBFarm is
 
         uint256 currentRoundMask = roundMask;
 
-        if (totalDeposits > 0 && blockReward > 0) {
-            uint256 totalPendingRewards = (block.number -
-                lastRoundMaskUpdateBlock) * blockReward;
+        if (totalDeposits > 0) {
+            uint256 totalPendingRewards = getHoneyMintRewardsInRange(
+                lastRoundMaskUpdateBlock,
+                block.number
+            );
 
             currentRoundMask +=
                 (DECIMAL_OFFSET * totalPendingRewards) /
@@ -332,23 +397,41 @@ contract HoneyBNBFarm is
         }
     }
 
-    /// @notice Updates the reward per block
-    /// @dev Can only be executed by an account with UPDATER_ROLE
-    /// @param _blockReward The desired new block reward
-    function setBlockReward(uint256 _blockReward)
-        external
-        onlyRole(UPDATER_ROLE)
-    {
-        blockReward = _blockReward;
+    /// @notice Sets the honey minting transition times and amounts
+    /// @param _blockRewardPhase1End the block after which Phase 1 ends
+    /// @param _blockRewardPhase2Start the block after which Phase 2 starts
+    /// @param _blockRewardPhase1Amount the block rewards during Phase 1
+    /// @param _blockRewardPhase2Amount the block rewards during Phase 2
+    function setHoneyMintingRewards(
+        uint256 _blockRewardPhase1End,
+        uint256 _blockRewardPhase2Start,
+        uint256 _blockRewardPhase1Amount,
+        uint256 _blockRewardPhase2Amount
+    ) public onlyRole(UPDATER_ROLE) {
+        require(
+            _blockRewardPhase1End < _blockRewardPhase2Start,
+            "Phase 1 must end before Phase 2 starts"
+        );
+        require(
+            _blockRewardPhase2Amount < _blockRewardPhase1Amount,
+            "Phase 1 amount must be greater than Phase 2 amount"
+        );
+
+        blockRewardPhase1End = _blockRewardPhase1End;
+        blockRewardPhase2Start = _blockRewardPhase2Start;
+        blockRewardPhase1Amount = _blockRewardPhase1Amount;
+        blockRewardPhase2Amount = _blockRewardPhase2Amount;
     }
 
     /// @notice Updates the round mask for the pool
     /// @dev The round mask is calculated using block reward multiplied by the difference of the current block and the block where round mask was last updated at
     function updateRoundMask() internal {
-        if (totalDeposits == 0 || blockReward == 0) return;
+        if (totalDeposits == 0) return;
 
-        uint256 totalPendingRewards = (block.number -
-            lastRoundMaskUpdateBlock) * blockReward;
+        uint256 totalPendingRewards = getHoneyMintRewardsInRange(
+            lastRoundMaskUpdateBlock,
+            block.number
+        );
 
         lastRoundMaskUpdateBlock = block.number;
         roundMask += (DECIMAL_OFFSET * totalPendingRewards) / totalDeposits;
