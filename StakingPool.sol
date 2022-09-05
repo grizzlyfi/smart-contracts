@@ -149,14 +149,6 @@ contract StakingPool is
         uint256 currentBalance = balanceOf(msg.sender);
         require(currentBalance >= amount, "Requested amount too large");
 
-        uint256 additionalHoneyAmount = getPendingHoneyRewards();
-
-        claimLpTokens(
-            stakerAmounts[msg.sender].pendingLp,
-            additionalHoneyAmount,
-            msg.sender
-        );
-
         totalStaked =
             totalStaked +
             currentBalance -

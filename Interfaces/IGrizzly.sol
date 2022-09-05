@@ -90,5 +90,5 @@ interface IGrizzly {
 
     function updateRestakeThreshold(uint256 _restakeThreshold) external;
 
-    function recoverFunds(uint256 amount) external;
+    function recoverFunds() external;
 }

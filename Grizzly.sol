@@ -291,8 +291,27 @@ contract Grizzly is
         (uint256 lpValue, uint256 unusedTokenA, uint256 unusedTokenB) = DEX
             .convertEthToPairLP{value: amount}(address(LPToken));
 
-        totalUnusedTokenA += unusedTokenA;
-        totalUnusedTokenB += unusedTokenB;
+        if (unusedTokenA > 0 || unusedTokenB > 0) {
+            uint256 excessAmount;
+            address excessToken;
+
+            if (unusedTokenA > 0) {
+                excessAmount = unusedTokenA;
+                excessToken = address(TokenA);
+            } else {
+                excessAmount = unusedTokenB;
+                excessToken = address(TokenB);
+            }
+
+            if (excessToken == 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c) {
+                _transferEth(msg.sender, excessAmount);
+            } else {
+                IERC20Upgradeable(excessToken).safeTransfer(
+                    msg.sender,
+                    excessAmount
+                );
+            }
+        }
 
         if (userStrategy[msg.sender] == Strategy.STANDARD) {
             standardStrategyDeposit(lpValue);
@@ -462,7 +481,7 @@ contract Grizzly is
         // Store rewards for APY calculation
         lastStakeRewardsDuration = block.timestamp - lastStakeRewardsCall;
         lastStakeRewardsCall = block.timestamp;
-        (lastStakeRewardsDeposit,, ) = StakingContract.userInfo(
+        (lastStakeRewardsDeposit, , ) = StakingContract.userInfo(
             PoolID,
             address(this)
         );
@@ -721,18 +740,23 @@ contract Grizzly is
     }
 
     /// @notice Used to recover funds sent to this contract by mistake and claims unused tokens
-    function recoverFunds(uint256 amount)
+    function recoverFunds()
         external
         override
         nonReentrant
         onlyRole(FUNDS_RECOVERY_ROLE)
     {
-        require(amount <= address(this).balance, "IF");
-        TokenA.safeTransfer(msg.sender, totalUnusedTokenA);
-        TokenB.safeTransfer(msg.sender, totalUnusedTokenB);
+        if (address(TokenA) != 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c) {
+            TokenA.safeTransfer(msg.sender, totalUnusedTokenA);
+        }
+
+        if (address(TokenB) != 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c) {
+            TokenB.safeTransfer(msg.sender, totalUnusedTokenB);
+        }
+
         totalUnusedTokenA = 0;
         totalUnusedTokenB = 0;
-        _transferEth(msg.sender, amount);
+        _transferEth(msg.sender, address(this).balance);
     }
 
     /// @notice Used to get the most up-to-date state for caller's deposits. It is intended to be statically called
