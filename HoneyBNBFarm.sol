@@ -126,8 +126,17 @@ contract HoneyBNBFarm is
 
     /// @notice Converts the supplied amount of ETH into Honey-BNB-LP tokens, then stakes it into the pool
     /// @dev Executes claimRewards before the staking to get a clean state for the roundMask and the rewards
-    function stakeFromEth() external payable nonReentrant whenNotPaused {
+    function stakeFromEth(
+        address[] memory fromToken,
+        address[] memory toToken,
+        uint256[] memory amountIn,
+        uint256[] memory amountOut,
+        uint256 slippage
+    ) external payable nonReentrant whenNotPaused {
         require(msg.value > 0, "Amount must be greater than zero");
+
+        // Checks for slippage
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
 
         // The first person to stake will initiate reward distribution
         if (lastRoundMaskUpdateBlock == 0)
@@ -159,12 +168,22 @@ contract HoneyBNBFarm is
     /// @notice Unstakes the desired amount of Honey-BNB-LP tokens from the pool, then converts it into ETH and sends it back to the caller
     /// @dev Executes claimRewards before the unstaking to get a clean state for the roundMask and the rewards
     /// @param amount The desired amount to unstake for an investor in Honey-BNB-LP tokens
-    function unstakeToEth(uint256 amount) external nonReentrant whenNotPaused {
+    function unstakeToEth(
+        uint256 amount,
+        address[] memory fromToken,
+        address[] memory toToken,
+        uint256[] memory amountIn,
+        uint256[] memory amountOut,
+        uint256 slippage
+    ) external nonReentrant whenNotPaused {
         require(amount > 0, "Amount must be greater than zero");
         require(
             amount <= participantData[msg.sender].stakedAmount,
             "Amount exceeds current staked amount"
         );
+
+        // Checks for slippage
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
 
         claimRewards();
         participantData[msg.sender].stakedAmount -= amount;
@@ -192,12 +211,15 @@ contract HoneyBNBFarm is
     /// @dev Executes claimRewards before the staking to get a clean state for the roundMask and the rewards
     /// @param token the address of the token to be converted into Honey-BNB-LP tokens
     /// @param tokenAmount the amount of tokens to be converted into Honey-BNB-LP tokens
-    function stakeFromToken(address token, uint256 tokenAmount)
-        external
-        payable
-        nonReentrant
-        whenNotPaused
-    {
+    function stakeFromToken(
+        address token,
+        uint256 tokenAmount,
+        address[] memory fromToken,
+        address[] memory toToken,
+        uint256[] memory amountIn,
+        uint256[] memory amountOut,
+        uint256 slippage
+    ) external payable nonReentrant whenNotPaused {
         require(tokenAmount > 0, "Amount must be greater than zero");
 
         // The first person to stake will initiate reward distribution
@@ -209,6 +231,9 @@ contract HoneyBNBFarm is
                 tokenAmount,
             "Token not approved"
         );
+
+        // Checks for slippage
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
 
         // Pull tokens from caller
         IERC20Upgradeable(token).transferFrom(
@@ -250,16 +275,23 @@ contract HoneyBNBFarm is
     /// @dev Executes claimRewards before the unstaking to get a clean state for the roundMask and the rewards
     /// @param token The address of the token into which the Honey-BNB-LP tokens will be converted
     /// @param amount The desired amount to unstake for an investor in Honey-BNB-LP tokens
-    function unstakeToToken(address token, uint256 amount)
-        external
-        nonReentrant
-        whenNotPaused
-    {
+    function unstakeToToken(
+        address token,
+        uint256 amount,
+        address[] memory fromToken,
+        address[] memory toToken,
+        uint256[] memory amountIn,
+        uint256[] memory amountOut,
+        uint256 slippage
+    ) external nonReentrant whenNotPaused {
         require(amount > 0, "Amount must be greater than zero");
         require(
             amount <= participantData[msg.sender].stakedAmount,
             "Amount exceeds current staked amount"
         );
+
+        // Checks for slippage
+        DEX.checkSlippage(fromToken, toToken, amountIn, amountOut, slippage);
 
         claimRewards();
         participantData[msg.sender].stakedAmount -= amount;
